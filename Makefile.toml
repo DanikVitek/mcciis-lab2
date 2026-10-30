@@ -1,0 +1,59 @@
+# [tasks.clean-if-large]
+# description = "Runs cargo clean if target/ exceeds 10 GiB"
+# command = "cargo"
+# args = ["clean"]
+# condition_script = [
+# '''
+# #!/usr/bin/env bash
+# if [ ! -d "target" ]; then
+#     exit 1
+# fi
+#
+# # du -sk outputs size in KiB: 10 GiB = 10 * 1024 * 1024 = 10485760 KiB
+# SIZE_KB=$(du -sk target 2>/dev/null | cut -f1)
+#
+# if [ "${SIZE_KB:-0}" -ge 10485760 ]; then
+#     echo "target/ directory is ${SIZE_KB} KiB (> 10 GiB). Running clean..."
+#     exit 0
+# fi
+#
+# exit 1
+# '''
+# ]
+#
+# # Windows (PowerShell)
+# [tasks.clean-if-large.windows]
+# condition_script = [
+# '''
+# if (Test-Path "target") {
+#     $size = (Get-ChildItem -Path "target" -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+#     # 10 GiB in bytes = 10737418240
+#     if ($size -ge 10737418240) {
+#         Write-Host "target/ exceeds 10 GiB. Running clean..."
+#         exit 0
+#     }
+# }
+# exit 1
+# '''
+# ]
+#
+# # Run before build
+# [tasks.pre-build]
+# dependencies = ["clean-if-large"]
+
+[tasks.run-dev]
+private = true
+condition = { profiles = ["development"] }
+command = "cargo"
+args = ["run", "--features", "dev"]
+# dependencies = ["clean"]
+
+[tasks.run-prod]
+private = true
+condition = { profiles = ["production"] }
+command = "cargo"
+args = ["run", "--release"]
+# dependencies = ["clean"]
+
+[tasks.run]
+dependencies = ["run-dev", "run-prod"]
