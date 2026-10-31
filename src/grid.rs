@@ -9,6 +9,18 @@ use rand::{
 
 pub const TILE_SIZE: Vec2 = Vec2::splat(16.0);
 
+pub struct GridPlugin;
+
+impl Plugin for GridPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            PostUpdate,
+            (sync_translation_with_grid, sync_rotation_with_grid)
+                .before(TransformSystems::Propagate),
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component, Deref, DerefMut)]
 #[repr(transparent)]
 #[require(Transform)]
@@ -30,14 +42,14 @@ impl GridPosition {
     pub fn add_assign_wrapped_direction(&mut self, dir: Facing, bounds: GridSize) {
         match dir {
             Facing::North => {
-                if self.y == bounds.height - 1 {
+                if self.y == bounds.height() - 1 {
                     self.y = 0;
                 } else {
                     self.y += 1;
                 }
             }
             Facing::East => {
-                if self.x == bounds.width - 1 {
+                if self.x == bounds.width() - 1 {
                     self.x = 0;
                 } else {
                     self.x += 1;
@@ -45,14 +57,14 @@ impl GridPosition {
             }
             Facing::South => {
                 if self.y == 0 {
-                    self.y = bounds.height - 1;
+                    self.y = bounds.height() - 1;
                 } else {
                     self.y -= 1;
                 }
             }
             Facing::West => {
                 if self.x == 0 {
-                    self.x = bounds.width - 1;
+                    self.x = bounds.width() - 1;
                 } else {
                     self.x -= 1;
                 }
@@ -61,10 +73,24 @@ impl GridPosition {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource)]
-pub struct GridSize {
-    pub width: u16,
-    pub height: u16,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource, Deref, DerefMut)]
+pub struct GridSize(pub U16Vec2);
+
+impl GridSize {
+    pub const fn new(width: u16, height: u16) -> Self {
+        Self(U16Vec2 {
+            x: width,
+            y: height,
+        })
+    }
+
+    pub const fn width(self) -> u16 {
+        self.0.x
+    }
+
+    pub const fn height(self) -> u16 {
+        self.0.y
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
@@ -102,9 +128,9 @@ impl Facing {
     pub const fn to_angle(self) -> f32 {
         match self {
             Self::North => 0.0,
-            Self::East => FRAC_PI_2,
+            Self::East => -FRAC_PI_2,
             Self::South => PI,
-            Self::West => -FRAC_PI_2,
+            Self::West => FRAC_PI_2,
         }
     }
 
@@ -134,22 +160,7 @@ impl Distribution<Facing> for StandardUniform {
     }
 }
 
-pub struct GridPlugin;
-
-impl Plugin for GridPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(
-            PostUpdate,
-            (
-                sync_transform_translation_with_grid,
-                sync_transform_rotation_with_grid,
-            )
-                .before(TransformSystems::Propagate),
-        );
-    }
-}
-
-fn sync_transform_translation_with_grid(
+fn sync_translation_with_grid(
     query: Query<(&GridPosition, &mut Transform), Changed<GridPosition>>,
 ) {
     for (grid_position, mut transform) in query {
@@ -158,7 +169,7 @@ fn sync_transform_translation_with_grid(
     }
 }
 
-fn sync_transform_rotation_with_grid(query: Query<(&Facing, &mut Transform), Changed<Facing>>) {
+fn sync_rotation_with_grid(query: Query<(&Facing, &mut Transform), Changed<Facing>>) {
     for (facing_direction, mut transform) in query {
         transform.rotation = facing_direction.to_quat2d();
     }

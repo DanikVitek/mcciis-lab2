@@ -4,7 +4,12 @@ use bevy::prelude::*;
 pub struct Plant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
+#[require(Character)]
 pub struct Herbivore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
+#[require(Character)]
 pub struct Predator;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
+pub struct Character;
