@@ -3,7 +3,7 @@ use bon::bon;
 use rand::{RngExt, distr::Distribution, seq::WeightError};
 
 use crate::{
-    character::{Herbivore, Plant, Predator},
+    character::{self, Herbivore, Plant, Predator},
     grid::{Facing, Grid, GridPosition, GridSize, TILE_SIZE},
 };
 
@@ -12,7 +12,7 @@ pub struct GameWorldPlugin;
 impl Plugin for GameWorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (setup_world,))
-            .add_systems(FixedUpdate, (update_world,))
+            .add_systems(FixedUpdate, (character::update_positions,))
             .insert_resource(Time::<Fixed>::from_seconds(0.5))
             .insert_resource(
                 DistributionConfig::builder()
@@ -200,10 +200,4 @@ fn setup_world(
                 }
             }
         });
-}
-
-fn update_world(query: Query<(&mut GridPosition, &Facing)>, field_size: Res<GridSize>) {
-    for (mut pos, facing) in query {
-        pos.add_assign_wrapped_direction(*facing, *field_size);
-    }
 }
