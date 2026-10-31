@@ -1,7 +1,9 @@
+use core::num::NonZeroU32;
+
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
 use itertools::Itertools;
-use nalgebra::{ArrayStorage, Const, ReshapableStorage, SMatrix, SVector, U1};
+use nalgebra::{ArrayStorage, Const, ReshapableStorage, SMatrix, SVector};
 use rand::{
     Rng, RngExt,
     distr::{Distribution, StandardUniform},
@@ -14,39 +16,91 @@ pub struct Plant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
 #[require(
+    Age,
     Energy,
     MetabolismRate(2),
+    Generation,
     Brain = rand::random::<Brain>(),
 )]
 pub struct Herbivore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
 #[require(
+    Age,
     Energy,
     MetabolismRate(1),
+    Generation,
     Brain = rand::random::<Brain>(),
 )]
 pub struct Predator;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
+pub struct Age(u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
 pub struct Energy(u8);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
+pub struct Generation(NonZeroU32);
+
+impl Default for Generation {
+    fn default() -> Self {
+        Self(NonZeroU32::MIN)
+    }
+}
+
 impl Default for Energy {
     fn default() -> Self {
-        Self(64)
+        Self(50)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DecrementResult<T> {
+    CarriesOn(T),
+    Deceased(T),
+}
+
+impl<T> DecrementResult<T> {
+    pub fn into_value(self) -> T {
+        match self {
+            Self::CarriesOn(v) => v,
+            Self::Deceased(v) => v,
+        }
     }
 }
 
 impl Energy {
+    const MAX: Self = Self(100);
+
     pub fn increment(&mut self) {
-        self.0 = self.0.saturating_add(1);
+        self.0 = Self::MAX.0.min(self.0 + 1);
     }
 
     /// # Returns
     /// Returns `true` if reached zero
-    pub fn decrement(&mut self, rate: MetabolismRate) -> bool {
+    pub fn decrement(&mut self, rate: MetabolismRate) -> DecrementResult<()> {
         self.0 = self.0.saturating_sub(rate.0);
-        self.0 == 0
+        if self.0 == 0 {
+            DecrementResult::Deceased(())
+        } else {
+            DecrementResult::CarriesOn(())
+        }
+    }
+
+    pub fn can_reproduce(self) -> bool {
+        self.0 >= 90
+    }
+
+    pub fn distribute(&mut self) -> DecrementResult<Energy> {
+        let start = self.0;
+        self.0 /= 2;
+        let child_energy = Self(start - self.0);
+        if self.0 == 0 {
+            DecrementResult::Deceased(child_energy)
+        } else {
+            DecrementResult::CarriesOn(child_energy)
+        }
     }
 }
 
@@ -178,14 +232,12 @@ impl SpatialGrid {
         }
     }
 
-    #[inline]
     pub fn insert(&mut self, pos: GridPosition, entity: Entity, kind: EntityKind) {
         let i = self.idx(pos);
         self.counts[i][kind as usize] += 1;
         self.entities[i].push((entity, kind));
     }
 
-    #[inline]
     pub fn remove(&mut self, pos: GridPosition, entity: Entity, kind: EntityKind) -> bool {
         let i = self.idx(pos);
         let cell = &mut self.entities[i];
@@ -198,7 +250,7 @@ impl SpatialGrid {
         }
     }
 
-    #[inline]
+    #[track_caller]
     pub fn move_entity(
         &mut self,
         from: GridPosition,
@@ -216,7 +268,6 @@ impl SpatialGrid {
 
     /// Sums `[Plant, Herbivore, Predator]` counts across a slice of local sensor offsets.
     /// Excludes the querying agent itself if an offset is `(0, 0)`.
-    #[inline]
     fn count_zone(
         &self,
         origin: GridPosition,
@@ -294,6 +345,8 @@ impl SpatialGrid {
 }
 
 pub mod system {
+    use bevy::ecs::entity::EntityHashSet;
+
     use super::*;
 
     #[allow(clippy::type_complexity)]
@@ -301,21 +354,40 @@ pub mod system {
         mut commands: Commands,
         mut spatial_grid: ResMut<SpatialGrid>,
         field_size: Res<GridSize>,
-        characters: Query<(
-            Entity,
-            &mut GridPosition,
-            &mut Facing,
-            &mut Energy,
-            &Brain,
-            &SensorOffsets,
-            &MetabolismRate,
-            Has<Herbivore>,
-        )>,
+        characters: Query<
+            (
+                Entity,
+                &mut GridPosition,
+                &mut Facing,
+                &mut Energy,
+                &mut Age,
+                &Brain,
+                &SensorOffsets,
+                &MetabolismRate,
+                Has<Herbivore>,
+            ),
+            Without<Plant>,
+        >,
+        mut plant_positions: Query<&mut GridPosition, With<Plant>>,
     ) {
-        for (entity, mut pos, mut facing, mut energy, brain, sensors, metabolism, is_herbivore) in
-            characters
+        let mut consumed_herbivores = EntityHashSet::new();
+
+        for (
+            entity,
+            mut pos,
+            mut facing,
+            mut energy,
+            mut age,
+            brain,
+            sensors,
+            metabolism,
+            is_herbivore,
+        ) in characters
         {
             let self_kind = if is_herbivore {
+                if consumed_herbivores.contains(&entity) {
+                    continue;
+                }
                 EntityKind::Herbivore
             } else {
                 EntityKind::Predator
@@ -325,29 +397,32 @@ pub mod system {
 
             match brain.act_on(inputs) {
                 Action::TurnLeft => {
-                    if energy.decrement(*metabolism) {
+                    if let DecrementResult::Deceased(()) = energy.decrement(*metabolism) {
                         spatial_grid.remove(*pos, entity, self_kind);
                         commands.entity(entity).despawn();
                     } else {
                         *facing = facing.counterclockwise();
+                        age.0 += 1;
                     }
                 }
                 Action::TurnRight => {
-                    if energy.decrement(*metabolism) {
+                    if let DecrementResult::Deceased(()) = energy.decrement(*metabolism) {
                         spatial_grid.remove(*pos, entity, self_kind);
                         commands.entity(entity).despawn();
                     } else {
                         *facing = facing.clockwise();
+                        age.0 += 1;
                     }
                 }
                 Action::GoForward => {
-                    if energy.decrement(*metabolism) {
+                    if let DecrementResult::Deceased(()) = energy.decrement(*metabolism) {
                         spatial_grid.remove(*pos, entity, self_kind);
                         commands.entity(entity).despawn();
                     } else {
                         let old_pos = *pos;
                         pos.add_assign_wrapped_direction(*facing, *field_size);
                         spatial_grid.move_entity(old_pos, *pos, entity, self_kind);
+                        age.0 += 1;
                     }
                 }
                 Action::Consume => {
@@ -363,13 +438,31 @@ pub mod system {
                         target_kind,
                         entity,
                     ) {
-                        spatial_grid.remove(target_pos, target_entity, target_kind);
-                        commands.entity(target_entity).despawn();
+                        if target_kind == EntityKind::Plant {
+                            let new_pos = GridPosition::new(
+                                rand::random_range(0..field_size.width()),
+                                rand::random_range(0..field_size.height()),
+                            );
+                            *plant_positions.get_mut(target_entity).unwrap() = new_pos;
+                            spatial_grid.move_entity(
+                                target_pos,
+                                new_pos,
+                                target_entity,
+                                target_kind,
+                            );
+                        } else {
+                            commands.entity(target_entity).despawn();
+                            spatial_grid.remove(target_pos, target_entity, target_kind);
+                            consumed_herbivores.insert(target_entity);
+                        }
+
                         energy.increment();
-                    } else if energy.decrement(*metabolism) {
+                    } else if let DecrementResult::Deceased(()) = energy.decrement(*metabolism) {
                         spatial_grid.remove(*pos, entity, self_kind);
                         commands.entity(entity).despawn();
+                        continue;
                     }
+                    age.0 += 1;
                 }
             }
         }

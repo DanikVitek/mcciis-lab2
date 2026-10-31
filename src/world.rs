@@ -61,6 +61,8 @@ impl DistributionConfig {
 }
 
 pub mod system {
+    use itertools::Itertools;
+
     use crate::character::{EntityKind, SpatialGrid};
 
     use super::*;
@@ -105,89 +107,87 @@ pub mod system {
 
                 let mut rng = rand::rng();
 
-                for y in 0..field_size.height() {
-                    for x in 0..field_size.width() {
-                        match dist.sample(&mut rng) {
-                            0 => {
-                                rest -= 1;
-                                match dist.update_weights(&[(0, &rest)]) {
-                                    Ok(()) => {}
-                                    Err(WeightError::InsufficientNonZero) => return,
-                                    Err(_) => unreachable!(),
-                                }
+                for (x, y) in (0..field_size.width()).cartesian_product(0..field_size.height()) {
+                    match dist.sample(&mut rng) {
+                        0 => {
+                            rest -= 1;
+                            match dist.update_weights(&[(0, &rest)]) {
+                                Ok(()) => {}
+                                Err(WeightError::InsufficientNonZero) => return,
+                                Err(_) => unreachable!(),
                             }
-                            1 => {
-                                let pos = GridPosition::new(x, y);
-                                let entity = parent
-                                    .spawn((
-                                        Plant,
-                                        pos,
-                                        Sprite {
-                                            image: plant_image.clone(),
-                                            custom_size: Some(TILE_SIZE),
-                                            ..default()
-                                        },
-                                    ))
-                                    .id();
-                                spatial_grid.insert(pos, entity, EntityKind::Plant);
-                                plants_total -= 1;
-                                match dist.update_weights(&[(1, &plants_total)]) {
-                                    Ok(()) => {}
-                                    Err(WeightError::InsufficientNonZero) => return,
-                                    Err(_) => unreachable!(),
-                                }
-                            }
-                            idx @ (2 | 3) => {
-                                let pos = GridPosition::new(x, y);
-                                let dir = rng.random::<Facing>();
-                                match idx {
-                                    2 => {
-                                        let entity = parent
-                                            .spawn((
-                                                Herbivore,
-                                                pos,
-                                                dir,
-                                                Sprite {
-                                                    image: herbivore_image.clone(),
-                                                    custom_size: Some(TILE_SIZE),
-                                                    ..default()
-                                                },
-                                            ))
-                                            .id();
-                                        spatial_grid.insert(pos, entity, EntityKind::Herbivore);
-                                        herbivores_total -= 1;
-                                        match dist.update_weights(&[(2, &herbivores_total)]) {
-                                            Ok(()) => {}
-                                            Err(WeightError::InsufficientNonZero) => return,
-                                            Err(_) => unreachable!(),
-                                        }
-                                    }
-                                    3 => {
-                                        let entity = parent
-                                            .spawn((
-                                                Predator,
-                                                pos,
-                                                dir,
-                                                Sprite {
-                                                    image: predator_image.clone(),
-                                                    custom_size: Some(TILE_SIZE),
-                                                    ..default()
-                                                },
-                                            ))
-                                            .id();
-                                        spatial_grid.insert(pos, entity, EntityKind::Predator);
-                                        predators_total -= 1;
-                                        match dist.update_weights(&[(3, &predators_total)]) {
-                                            Ok(()) => {}
-                                            Err(WeightError::InsufficientNonZero) => return,
-                                            Err(_) => unreachable!(),
-                                        }
-                                    }
-                                    _ => unreachable!(),
-                                }
-                            }
-                            _ => unreachable!(),
                         }
+                        1 => {
+                            let pos = GridPosition::new(x, y);
+                            let entity = parent
+                                .spawn((
+                                    Plant,
+                                    pos,
+                                    Sprite {
+                                        image: plant_image.clone(),
+                                        custom_size: Some(TILE_SIZE),
+                                        ..default()
+                                    },
+                                ))
+                                .id();
+                            spatial_grid.insert(pos, entity, EntityKind::Plant);
+                            plants_total -= 1;
+                            match dist.update_weights(&[(1, &plants_total)]) {
+                                Ok(()) => {}
+                                Err(WeightError::InsufficientNonZero) => return,
+                                Err(_) => unreachable!(),
+                            }
+                        }
+                        idx @ (2 | 3) => {
+                            let pos = GridPosition::new(x, y);
+                            let dir = rng.random::<Facing>();
+                            match idx {
+                                2 => {
+                                    let entity = parent
+                                        .spawn((
+                                            Herbivore,
+                                            pos,
+                                            dir,
+                                            Sprite {
+                                                image: herbivore_image.clone(),
+                                                custom_size: Some(TILE_SIZE),
+                                                ..default()
+                                            },
+                                        ))
+                                        .id();
+                                    spatial_grid.insert(pos, entity, EntityKind::Herbivore);
+                                    herbivores_total -= 1;
+                                    match dist.update_weights(&[(2, &herbivores_total)]) {
+                                        Ok(()) => {}
+                                        Err(WeightError::InsufficientNonZero) => return,
+                                        Err(_) => unreachable!(),
+                                    }
+                                }
+                                3 => {
+                                    let entity = parent
+                                        .spawn((
+                                            Predator,
+                                            pos,
+                                            dir,
+                                            Sprite {
+                                                image: predator_image.clone(),
+                                                custom_size: Some(TILE_SIZE),
+                                                ..default()
+                                            },
+                                        ))
+                                        .id();
+                                    spatial_grid.insert(pos, entity, EntityKind::Predator);
+                                    predators_total -= 1;
+                                    match dist.update_weights(&[(3, &predators_total)]) {
+                                        Ok(()) => {}
+                                        Err(WeightError::InsufficientNonZero) => return,
+                                        Err(_) => unreachable!(),
+                                    }
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        _ => unreachable!(),
                     }
                 }
             });

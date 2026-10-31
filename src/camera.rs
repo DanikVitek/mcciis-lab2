@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy::{
-    camera,
     input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel},
     window::PrimaryWindow,
 };
@@ -11,13 +10,16 @@ use crate::grid::{GridSize, TILE_SIZE};
 const BACKGROUND_COLOR: Color = Color::oklch(0.5221, 0.1258, 144.53);
 
 const ZOOM_SCALE_MIN: f32 = 0.1;
-const ZOOM_SCALE_MAX: f32 = 1.0;
+// const ZOOM_SCALE_MAX: f32 = 1.0;
 
 pub mod system {
     use super::*;
 
-    pub fn setup(mut commands: Commands, field_size: Res<GridSize>) {
-        let world_size = TILE_SIZE * field_size.as_vec2();
+    pub fn setup(
+        mut commands: Commands,
+        // field_size: Res<GridSize>
+    ) {
+        // let world_size = TILE_SIZE * field_size.as_vec2();
 
         commands.spawn((
             Camera2d,
@@ -26,11 +28,11 @@ pub mod system {
                 ..default()
             },
             Projection::Orthographic(OrthographicProjection {
-                scaling_mode: camera::ScalingMode::AutoMin {
-                    min_width: world_size.x,
-                    min_height: world_size.y,
-                },
-                scale: ZOOM_SCALE_MAX,
+                // scaling_mode: camera::ScalingMode::AutoMin {
+                //     min_width: world_size.x,
+                //     min_height: world_size.y,
+                // },
+                // scale: ZOOM_SCALE_MAX,
                 ..OrthographicProjection::default_2d()
             }),
         ));
@@ -66,7 +68,7 @@ pub mod system {
         let old_scale = projection.scale;
 
         // Exponentional zoom factor guarantees symmetrical zoom-in and zoom-out steps
-        let new_scale = (old_scale * (-scroll_delta).exp()).clamp(ZOOM_SCALE_MIN, ZOOM_SCALE_MAX);
+        let new_scale = (old_scale * (-scroll_delta).exp()).max(ZOOM_SCALE_MIN);
 
         if (new_scale - old_scale).abs() < f32::EPSILON {
             return;
