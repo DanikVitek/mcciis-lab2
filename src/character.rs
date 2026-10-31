@@ -1,7 +1,7 @@
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
 use itertools::Itertools;
-use nalgebra::{SMatrix, SVector};
+use nalgebra::{ArrayStorage, Const, ReshapableStorage, SMatrix, SVector, U1};
 use rand::{
     Rng, RngExt,
     distr::{Distribution, StandardUniform},
@@ -13,12 +13,45 @@ use crate::grid::{Facing, GridPosition, GridSize};
 pub struct Plant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
-#[require(Brain = rand::random::<Brain>())]
+#[require(
+    Energy,
+    MetabolismRate(2),
+    Brain = rand::random::<Brain>(),
+)]
 pub struct Herbivore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
-#[require(Brain = rand::random::<Brain>())]
+#[require(
+    Energy,
+    MetabolismRate(1),
+    Brain = rand::random::<Brain>(),
+)]
 pub struct Predator;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
+pub struct Energy(u8);
+
+impl Default for Energy {
+    fn default() -> Self {
+        Self(64)
+    }
+}
+
+impl Energy {
+    pub fn increment(&mut self) {
+        self.0 = self.0.saturating_add(1);
+    }
+
+    /// # Returns
+    /// Returns `true` if reached zero
+    pub fn decrement(&mut self, rate: MetabolismRate) -> bool {
+        self.0 = self.0.saturating_sub(rate.0);
+        self.0 == 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
+pub struct MetabolismRate(u8);
 
 /// Base offsets for the sensors, as if the agent for [facing](Facing) [North](Facing::North)
 #[derive(Debug, Component)]
@@ -38,8 +71,8 @@ pub struct SensorOffsets {
 impl Default for SensorOffsets {
     fn default() -> Self {
         let front = (-2..=2).map(|x| I16Vec2 { x, y: 2 }).collect();
-        let left = Box::new([I16Vec2 { x: 0, y: -2 }, I16Vec2 { x: 1, y: -2 }]);
-        let right = Box::new([I16Vec2 { x: 0, y: 2 }, I16Vec2 { x: 1, y: 2 }]);
+        let left = Box::new([I16Vec2 { y: 0, x: -2 }, I16Vec2 { y: 1, x: -2 }]);
+        let right = Box::new([I16Vec2 { y: 0, x: 2 }, I16Vec2 { y: 1, x: 2 }]);
         let near = (-1..=1)
             .cartesian_product(0..=1)
             .map(|(x, y)| I16Vec2 { x, y })
@@ -106,11 +139,239 @@ impl Brain {
     }
 }
 
-pub fn update_positions(
-    query: Query<(&mut GridPosition, &Facing), With<Brain>>,
-    field_size: Res<GridSize>,
-) {
-    for (mut pos, facing) in query {
-        pos.add_assign_wrapped_direction(*facing, *field_size);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum EntityKind {
+    Plant,
+    Herbivore,
+    Predator,
+}
+
+#[derive(Resource)]
+pub struct SpatialGrid {
+    size: GridSize,
+    /// Hot array for `Brain` inputs: `[plants, herbivores, predators]` per tile
+    counts: Vec<[u16; 3]>,
+    /// Cold array for `Action::Consume`: entities currently standing on each tile
+    entities: Vec<Vec<(Entity, EntityKind)>>,
+}
+
+impl SpatialGrid {
+    pub fn new(size: GridSize) -> Self {
+        let len = usize::from(size.x) * usize::from(size.y);
+        Self {
+            size,
+            counts: vec![[0; 3]; len],
+            entities: vec![Vec::new(); len],
+        }
+    }
+
+    #[inline]
+    fn idx(&self, pos: GridPosition) -> usize {
+        usize::from(pos.y) * usize::from(self.size.x) + usize::from(pos.x)
+    }
+
+    pub fn clear(&mut self) {
+        self.counts.fill([0; 3]);
+        for cell in &mut self.entities {
+            cell.clear();
+        }
+    }
+
+    #[inline]
+    pub fn insert(&mut self, pos: GridPosition, entity: Entity, kind: EntityKind) {
+        let i = self.idx(pos);
+        self.counts[i][kind as usize] += 1;
+        self.entities[i].push((entity, kind));
+    }
+
+    #[inline]
+    pub fn remove(&mut self, pos: GridPosition, entity: Entity, kind: EntityKind) -> bool {
+        let i = self.idx(pos);
+        let cell = &mut self.entities[i];
+        if let Some(pos_in_vec) = cell.iter().position(|&(e, _)| e == entity) {
+            cell.swap_remove(pos_in_vec);
+            self.counts[i][kind as usize] -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    #[inline]
+    pub fn move_entity(
+        &mut self,
+        from: GridPosition,
+        to: GridPosition,
+        entity: Entity,
+        kind: EntityKind,
+    ) {
+        if from == to {
+            return;
+        }
+        let removed = self.remove(from, entity, kind);
+        debug_assert!(removed, "Moved entity was not registered at `from` tile");
+        self.insert(to, entity, kind);
+    }
+
+    /// Sums `[Plant, Herbivore, Predator]` counts across a slice of local sensor offsets.
+    /// Excludes the querying agent itself if an offset is `(0, 0)`.
+    #[inline]
+    fn count_zone(
+        &self,
+        origin: GridPosition,
+        facing: Facing,
+        self_kind: EntityKind,
+        offsets: &[I16Vec2],
+    ) -> [u32; 3] {
+        let mut total = [0u32; 3];
+
+        for &offset in offsets {
+            let target = origin.add_wrapped_rotated_offset(offset, facing, self.size);
+            let cell_counts = self.counts[self.idx(target)];
+
+            total[0] += u32::from(cell_counts[0]);
+            total[1] += u32::from(cell_counts[1]);
+            total[2] += u32::from(cell_counts[2]);
+
+            // Do not count the sensing character itself on its own tile (0, 0) in `near`
+            if offset == I16Vec2::ZERO {
+                total[self_kind as usize] = total[self_kind as usize].saturating_sub(1);
+            }
+        }
+
+        total
+    }
+
+    /// Computes all 12 inputs (4 zones × 3 entity kinds) for `Brain::act_on`.
+    pub fn sense_brain_inputs(
+        &self,
+        origin: GridPosition,
+        facing: Facing,
+        self_kind: EntityKind,
+        sensors: &SensorOffsets,
+    ) -> BrainInputs {
+        let f = self
+            .count_zone(origin, facing, self_kind, &sensors.front)
+            .map(|n| n as f32);
+        let l = self
+            .count_zone(origin, facing, self_kind, &sensors.left)
+            .map(|n| n as f32);
+        let r = self
+            .count_zone(origin, facing, self_kind, &sensors.right)
+            .map(|n| n as f32);
+        let n = self
+            .count_zone(origin, facing, self_kind, &sensors.near)
+            .map(|n| n as f32);
+
+        let arr_storage = ArrayStorage([f, l, r, n]).reshape_generic(Const, Const);
+        BrainInputs::from_array_storage(arr_storage)
+    }
+
+    /// Finds the first entity of `target_kind` in the agent's `near` zone for `Action::Consume`.
+    pub fn find_target_in_near(
+        &self,
+        origin: GridPosition,
+        facing: Facing,
+        near_offsets: &[I16Vec2],
+        target_kind: EntityKind,
+        exclude_self: Entity,
+    ) -> Option<(Entity, GridPosition)> {
+        for &offset in near_offsets {
+            let target_pos = origin.add_wrapped_rotated_offset(offset, facing, self.size);
+            let i = self.idx(target_pos);
+            if self.counts[i][target_kind as usize] == 0 {
+                continue;
+            }
+            for &(entity, kind) in &self.entities[i] {
+                if kind == target_kind && entity != exclude_self {
+                    return Some((entity, target_pos));
+                }
+            }
+        }
+        None
+    }
+}
+
+pub mod system {
+    use super::*;
+
+    #[allow(clippy::type_complexity)]
+    pub fn step_characters(
+        mut commands: Commands,
+        mut spatial_grid: ResMut<SpatialGrid>,
+        field_size: Res<GridSize>,
+        characters: Query<(
+            Entity,
+            &mut GridPosition,
+            &mut Facing,
+            &mut Energy,
+            &Brain,
+            &SensorOffsets,
+            &MetabolismRate,
+            Has<Herbivore>,
+        )>,
+    ) {
+        for (entity, mut pos, mut facing, mut energy, brain, sensors, metabolism, is_herbivore) in
+            characters
+        {
+            let self_kind = if is_herbivore {
+                EntityKind::Herbivore
+            } else {
+                EntityKind::Predator
+            };
+
+            let inputs = spatial_grid.sense_brain_inputs(*pos, *facing, self_kind, sensors);
+
+            match brain.act_on(inputs) {
+                Action::TurnLeft => {
+                    if energy.decrement(*metabolism) {
+                        spatial_grid.remove(*pos, entity, self_kind);
+                        commands.entity(entity).despawn();
+                    } else {
+                        *facing = facing.counterclockwise();
+                    }
+                }
+                Action::TurnRight => {
+                    if energy.decrement(*metabolism) {
+                        spatial_grid.remove(*pos, entity, self_kind);
+                        commands.entity(entity).despawn();
+                    } else {
+                        *facing = facing.clockwise();
+                    }
+                }
+                Action::GoForward => {
+                    if energy.decrement(*metabolism) {
+                        spatial_grid.remove(*pos, entity, self_kind);
+                        commands.entity(entity).despawn();
+                    } else {
+                        let old_pos = *pos;
+                        pos.add_assign_wrapped_direction(*facing, *field_size);
+                        spatial_grid.move_entity(old_pos, *pos, entity, self_kind);
+                    }
+                }
+                Action::Consume => {
+                    let target_kind = if is_herbivore {
+                        EntityKind::Plant
+                    } else {
+                        EntityKind::Herbivore
+                    };
+                    if let Some((target_entity, target_pos)) = spatial_grid.find_target_in_near(
+                        *pos,
+                        *facing,
+                        &sensors.near,
+                        target_kind,
+                        entity,
+                    ) {
+                        spatial_grid.remove(target_pos, target_entity, target_kind);
+                        commands.entity(target_entity).despawn();
+                        energy.increment();
+                    } else if energy.decrement(*metabolism) {
+                        spatial_grid.remove(*pos, entity, self_kind);
+                        commands.entity(entity).despawn();
+                    }
+                }
+            }
+        }
     }
 }

@@ -2,24 +2,13 @@ use core::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::math::{I16Vec2, U16Vec2};
 use bevy::prelude::*;
+use nalgebra::Complex;
 use rand::{
     Rng, RngExt,
     distr::{Distribution, StandardUniform},
 };
 
 pub const TILE_SIZE: Vec2 = Vec2::splat(16.0);
-
-pub struct GridPlugin;
-
-impl Plugin for GridPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(
-            PostUpdate,
-            (sync_translation_with_grid, sync_rotation_with_grid)
-                .before(TransformSystems::Propagate),
-        );
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component, Deref, DerefMut)]
 #[repr(transparent)]
@@ -70,6 +59,21 @@ impl GridPosition {
                 }
             }
         }
+    }
+
+    pub fn add_wrapped_rotated_offset(
+        self,
+        offset: I16Vec2,
+        dir: Facing,
+        bounds: GridSize,
+    ) -> Self {
+        let rotated_offset = dir.rotate_offset(offset);
+        let raw = self.as_ivec2() + rotated_offset.as_ivec2();
+        let wrapped = U16Vec2::new(
+            raw.x.rem_euclid(i32::from(bounds.x)) as u16,
+            raw.y.rem_euclid(i32::from(bounds.y)) as u16,
+        );
+        Self(wrapped)
     }
 }
 
@@ -134,7 +138,16 @@ impl Facing {
         }
     }
 
-    pub fn to_quat2d(self) -> Quat {
+    pub const fn to_complex(self) -> Complex<i16> {
+        match self {
+            Self::North => Complex::new(1, 0),
+            Self::East => Complex::new(0, -1),
+            Self::South => Complex::new(-1, 0),
+            Self::West => Complex::new(0, 1),
+        }
+    }
+
+    pub fn to_quat(self) -> Quat {
         Quat::from_rotation_z(self.to_angle())
     }
 
@@ -145,6 +158,11 @@ impl Facing {
             Self::South => I16Vec2::NEG_Y,
             Self::West => I16Vec2::NEG_X,
         }
+    }
+
+    pub fn rotate_offset(self, offset: I16Vec2) -> I16Vec2 {
+        let Complex { re, im } = Complex::new(offset.x, offset.y) * self.to_complex();
+        I16Vec2 { x: re, y: im }
     }
 }
 
@@ -160,17 +178,21 @@ impl Distribution<Facing> for StandardUniform {
     }
 }
 
-fn sync_translation_with_grid(
-    query: Query<(&GridPosition, &mut Transform), Changed<GridPosition>>,
-) {
-    for (grid_position, mut transform) in query {
-        let z = transform.translation.z;
-        transform.translation = grid_position.to_world_xyz(z);
-    }
-}
+pub mod system {
+    use super::*;
 
-fn sync_rotation_with_grid(query: Query<(&Facing, &mut Transform), Changed<Facing>>) {
-    for (facing_direction, mut transform) in query {
-        transform.rotation = facing_direction.to_quat2d();
+    pub fn sync_translation_with_grid(
+        query: Query<(&GridPosition, &mut Transform), Changed<GridPosition>>,
+    ) {
+        for (grid_position, mut transform) in query {
+            let z = transform.translation.z;
+            transform.translation = grid_position.to_world_xyz(z);
+        }
+    }
+
+    pub fn sync_rotation_with_grid(query: Query<(&Facing, &mut Transform), Changed<Facing>>) {
+        for (facing_direction, mut transform) in query {
+            transform.rotation = facing_direction.to_quat();
+        }
     }
 }
