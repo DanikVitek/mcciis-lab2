@@ -28,7 +28,7 @@ impl GridPosition {
         }
     }
 
-    pub fn add_assign_wrapped_direction(&mut self, dir: Facing, bounds: GridSize) {
+    pub fn add_assign_wrapping_direction(&mut self, dir: Facing, bounds: GridSize) {
         match dir {
             Facing::North => {
                 if self.y == bounds.height() - 1 {
@@ -61,7 +61,7 @@ impl GridPosition {
         }
     }
 
-    pub fn add_wrapped_rotated_offset(
+    pub fn add_wrapping_rotated_offset(
         self,
         offset: I16Vec2,
         dir: Facing,
@@ -69,6 +69,15 @@ impl GridPosition {
     ) -> Self {
         let rotated_offset = dir.rotate_offset(offset);
         let raw = self.as_ivec2() + rotated_offset.as_ivec2();
+        let wrapped = U16Vec2::new(
+            raw.x.rem_euclid(i32::from(bounds.x)) as u16,
+            raw.y.rem_euclid(i32::from(bounds.y)) as u16,
+        );
+        Self(wrapped)
+    }
+
+    pub fn add_wrapping_signed(self, x: I16Vec2, bounds: GridSize) -> Self {
+        let raw = self.as_ivec2() + x.as_ivec2();
         let wrapped = U16Vec2::new(
             raw.x.rem_euclid(i32::from(bounds.x)) as u16,
             raw.y.rem_euclid(i32::from(bounds.y)) as u16,

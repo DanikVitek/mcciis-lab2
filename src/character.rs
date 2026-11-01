@@ -49,6 +49,12 @@ impl Default for Generation {
     }
 }
 
+impl Generation {
+    pub fn next(self) -> Self {
+        Self(NonZeroU32::new(self.0.get() + 1).unwrap())
+    }
+}
+
 impl Default for Energy {
     fn default() -> Self {
         Self(50)
@@ -88,7 +94,7 @@ impl Energy {
         }
     }
 
-    pub fn can_reproduce(self) -> bool {
+    pub fn is_enough_to_reproduce(self) -> bool {
         self.0 >= 90
     }
 
@@ -191,6 +197,29 @@ impl Brain {
             _ => unreachable!(),
         }
     }
+
+    pub fn mutated<R: Rng>(&self, rng: &mut R) -> Self {
+        let what_to_mutate = rng.random_range(0..((INPUTS + 1) * OUTPUTS));
+        if (0..(INPUTS * OUTPUTS)).contains(&what_to_mutate) {
+            let mut weights = self.weights;
+
+            weights[what_to_mutate] = rng.random();
+
+            Self {
+                weights,
+                biases: self.biases,
+            }
+        } else {
+            let mut biases = self.biases;
+
+            biases[what_to_mutate - INPUTS * OUTPUTS] = rng.random();
+
+            Self {
+                weights: self.weights,
+                biases,
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,7 +307,7 @@ impl SpatialGrid {
         let mut total = [0u32; 3];
 
         for &offset in offsets {
-            let target = origin.add_wrapped_rotated_offset(offset, facing, self.size);
+            let target = origin.add_wrapping_rotated_offset(offset, facing, self.size);
             let cell_counts = self.counts[self.idx(target)];
 
             total[0] += u32::from(cell_counts[0]);
@@ -329,7 +358,7 @@ impl SpatialGrid {
         exclude_self: Entity,
     ) -> Option<(Entity, GridPosition)> {
         for &offset in near_offsets {
-            let target_pos = origin.add_wrapped_rotated_offset(offset, facing, self.size);
+            let target_pos = origin.add_wrapping_rotated_offset(offset, facing, self.size);
             let i = self.idx(target_pos);
             if self.counts[i][target_kind as usize] == 0 {
                 continue;
@@ -344,12 +373,13 @@ impl SpatialGrid {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub mod system {
     use bevy::ecs::entity::EntityHashSet;
+    use rand::seq::IndexedRandom;
 
     use super::*;
 
-    #[allow(clippy::type_complexity)]
     pub fn step_characters(
         mut commands: Commands,
         mut spatial_grid: ResMut<SpatialGrid>,
@@ -420,7 +450,7 @@ pub mod system {
                         commands.entity(entity).despawn();
                     } else {
                         let old_pos = *pos;
-                        pos.add_assign_wrapped_direction(*facing, *field_size);
+                        pos.add_assign_wrapping_direction(*facing, *field_size);
                         spatial_grid.move_entity(old_pos, *pos, entity, self_kind);
                         age.0 += 1;
                     }
@@ -464,6 +494,83 @@ pub mod system {
                     }
                     age.0 += 1;
                 }
+            }
+        }
+    }
+
+    pub fn reproduction(
+        mut commands: Commands,
+        mut spatial_grid: ResMut<SpatialGrid>,
+        field_size: Res<GridSize>,
+        query: Query<(
+            Entity,
+            &mut Energy,
+            &Brain,
+            &GridPosition,
+            &Facing,
+            &Generation,
+            Has<Herbivore>,
+        )>,
+    ) {
+        let mut rng = rand::rng();
+        for (entity, mut energy, brain, pos, facing, generation, is_herbivore) in query {
+            if !energy.is_enough_to_reproduce() {
+                continue;
+            }
+
+            let entity_kind = if is_herbivore {
+                EntityKind::Herbivore
+            } else {
+                EntityKind::Predator
+            };
+
+            let offset = *[
+                [-1, -1],
+                [-1, 0],
+                [-1, 1],
+                [0, -1],
+                [0, 1],
+                [1, -1],
+                [1, 0],
+                [1, 1],
+            ]
+            .choose(&mut rng)
+            .unwrap();
+
+            let child_pos = pos.add_wrapping_signed(I16Vec2::from_array(offset), *field_size);
+            let child_brain = brain.mutated(&mut rng);
+            let child_gen = generation.next();
+
+            let res = energy.distribute();
+            let child_energy = res.into_value();
+
+            let child = if is_herbivore {
+                commands
+                    .spawn((
+                        Herbivore,
+                        child_pos,
+                        *facing,
+                        child_brain,
+                        child_gen,
+                        child_energy,
+                    ))
+                    .id()
+            } else {
+                commands
+                    .spawn((
+                        Predator,
+                        child_pos,
+                        *facing,
+                        child_brain,
+                        child_gen,
+                        child_energy,
+                    ))
+                    .id()
+            };
+            spatial_grid.insert(child_pos, child, entity_kind);
+            if let DecrementResult::Deceased(_) = res {
+                commands.entity(entity).despawn();
+                spatial_grid.remove(*pos, entity, entity_kind);
             }
         }
     }

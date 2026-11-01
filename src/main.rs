@@ -17,15 +17,24 @@ fn main() {
             (
                 camera::system::zoom_camera_to_cursor,
                 camera::system::pan_camera_on_drag,
-            ),
+            )
+                .chain_weak(),
         )
-        .add_systems(FixedUpdate, (character::system::step_characters,))
+        .add_systems(
+            FixedUpdate,
+            (
+                character::system::step_characters,
+                character::system::reproduction,
+            )
+                .chain(),
+        )
         .add_systems(
             FixedPostUpdate,
             (
                 grid::system::sync_translation_with_grid,
                 grid::system::sync_rotation_with_grid,
             )
+                .chain_weak()
                 .before(TransformSystems::Propagate),
         )
         .insert_resource(Time::<Fixed>::from_seconds(0.5))
