@@ -8,24 +8,13 @@ use rand::{
     distr::{Distribution, StandardUniform},
 };
 
-pub const TILE_SIZE: Vec2 = Vec2::splat(16.0);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component, Deref, DerefMut)]
 #[repr(transparent)]
-#[require(Transform)]
 pub struct GridPosition(pub U16Vec2);
 
 impl GridPosition {
-    pub fn new(x: u16, y: u16) -> Self {
+    pub const fn new(x: u16, y: u16) -> Self {
         Self(U16Vec2 { x, y })
-    }
-
-    pub fn to_world_xyz(self, z: f32) -> Vec3 {
-        Vec3 {
-            x: self.x as f32 * TILE_SIZE.x,
-            y: self.y as f32 * TILE_SIZE.y,
-            z,
-        }
     }
 
     pub fn add_assign_wrapping_direction(&mut self, dir: Facing, bounds: GridSize) {
@@ -76,8 +65,8 @@ impl GridPosition {
         Self(wrapped)
     }
 
-    pub fn add_wrapping_signed(self, x: I16Vec2, bounds: GridSize) -> Self {
-        let raw = self.as_ivec2() + x.as_ivec2();
+    pub fn add_wrapping_signed(self, offset: I16Vec2, bounds: GridSize) -> Self {
+        let raw = self.as_ivec2() + offset.as_ivec2();
         let wrapped = U16Vec2::new(
             raw.x.rem_euclid(i32::from(bounds.x)) as u16,
             raw.y.rem_euclid(i32::from(bounds.y)) as u16,
@@ -105,10 +94,6 @@ impl GridSize {
         self.0.y
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
-#[require(Transform, Visibility)]
-pub struct Grid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
 pub enum Facing {
@@ -160,7 +145,7 @@ impl Facing {
         Quat::from_rotation_z(self.to_angle())
     }
 
-    pub fn to_step_delta(self) -> I16Vec2 {
+    pub const fn to_step_delta(self) -> I16Vec2 {
         match self {
             Self::North => I16Vec2::Y,
             Self::East => I16Vec2::X,
@@ -183,25 +168,6 @@ impl Distribution<Facing> for StandardUniform {
             2 => Facing::South,
             3 => Facing::West,
             _ => unreachable!(),
-        }
-    }
-}
-
-pub mod system {
-    use super::*;
-
-    pub fn sync_translation_with_grid(
-        query: Query<(&GridPosition, &mut Transform), Changed<GridPosition>>,
-    ) {
-        for (grid_position, mut transform) in query {
-            let z = transform.translation.z;
-            transform.translation = grid_position.to_world_xyz(z);
-        }
-    }
-
-    pub fn sync_rotation_with_grid(query: Query<(&Facing, &mut Transform), Changed<Facing>>) {
-        for (facing_direction, mut transform) in query {
-            transform.rotation = facing_direction.to_quat();
         }
     }
 }
