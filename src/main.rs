@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use life_sim::{
     grid::GridSize,
     presentation::PresentationPlugin,
-    simulation::{DistributionConfig, SimulationPlugin},
+    simulation::{DistributionConfig, HistoryRecorderPlugin, SimulationPlugin},
 };
 
 fn main() {
@@ -19,6 +19,7 @@ fn main() {
         .add_plugins((
             DefaultPlugins.set(ImagePlugin::default_nearest()),
             SimulationPlugin::new(GridSize::new(100, 100), distribution),
+            HistoryRecorderPlugin::default(),
             PresentationPlugin::new(Duration::from_secs_f64(0.5)),
         ))
         .run();

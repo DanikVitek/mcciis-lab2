@@ -1,4 +1,5 @@
 pub mod brain;
+pub mod history;
 mod lifecycle;
 pub mod organism;
 pub mod seed;
@@ -10,6 +11,7 @@ use bevy::prelude::*;
 
 use crate::grid::GridSize;
 
+pub use self::history::{HistoryRecorderPlugin, HistorySample, SampleRate, SimulationHistory};
 pub use self::seed::{DistributionConfig, DistributionError};
 use self::spatial::SpatialGrid;
 
@@ -26,11 +28,21 @@ pub struct SimulationTick;
 pub enum SimulationSystems {
     Step,
     Reproduce,
+    /// End-of-tick telemetry / history recording phase.
+    ///
+    /// Runs after all [`Step`](Self::Step) and [`Reproduce`](Self::Reproduce) deferred commands
+    /// have been applied and after [`SimulationTickCount`] has been incremented for the completed tick.
+    Record,
 }
 
 /// Number of completed [`SimulationTick`] steps since initial startup or the last [`ResetSimulation`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Resource)]
 pub struct SimulationTickCount(pub u64);
+
+/// Global event emitted once all initial organisms have been spawned into the [`World`]
+/// (on initial `Startup` and after every [`ResetSimulation`]).
+#[derive(Debug, Clone, Copy, Default, Event)]
+pub struct WorldSeeded;
 
 /// Global event that clears all existing organisms, resizes [`SpatialGrid`] to [`GridSize`],
 /// resets [`SimulationTickCount`], and seeds a fresh population from [`DistributionConfig`].
@@ -66,7 +78,12 @@ impl Plugin for SimulationPlugin {
             .init_schedule(SimulationTick)
             .configure_sets(
                 SimulationTick,
-                (SimulationSystems::Step, SimulationSystems::Reproduce).chain(),
+                (
+                    SimulationSystems::Step,
+                    SimulationSystems::Reproduce,
+                    SimulationSystems::Record,
+                )
+                    .chain(),
             )
             .add_systems(Startup, seed::seed_world)
             .add_systems(
@@ -74,7 +91,9 @@ impl Plugin for SimulationPlugin {
                 (
                     lifecycle::step_organisms.in_set(SimulationSystems::Step),
                     lifecycle::reproduction.in_set(SimulationSystems::Reproduce),
-                    advance_tick_counter.after_ignore_deferred(SimulationSystems::Reproduce),
+                    advance_tick_counter
+                        .after_ignore_deferred(SimulationSystems::Reproduce)
+                        .before_ignore_deferred(SimulationSystems::Record),
                 ),
             )
             .add_observer(seed::on_reset_simulation)

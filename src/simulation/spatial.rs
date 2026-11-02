@@ -36,6 +36,22 @@ pub struct CellCounts<T> {
 }
 
 impl<T> CellCounts<T> {
+    pub const fn as_ref(&self) -> CellCounts<&T> {
+        CellCounts {
+            plants: &self.plants,
+            herbivores: &self.herbivores,
+            predators: &self.predators,
+        }
+    }
+
+    pub fn as_mut(&mut self) -> CellCounts<&mut T> {
+        CellCounts {
+            plants: &mut self.plants,
+            herbivores: &mut self.herbivores,
+            predators: &mut self.predators,
+        }
+    }
+
     pub fn map<F, U>(self, mut f: F) -> CellCounts<U>
     where
         F: FnMut(T) -> U,
@@ -47,8 +63,39 @@ impl<T> CellCounts<T> {
         }
     }
 
+    pub fn for_each<F>(self, mut f: F)
+    where
+        F: FnMut(T),
+    {
+        f(self.plants);
+        f(self.herbivores);
+        f(self.predators);
+    }
+
+    pub fn zip<U>(self, other: CellCounts<U>) -> CellCounts<(T, U)> {
+        CellCounts {
+            plants: (self.plants, other.plants),
+            herbivores: (self.herbivores, other.herbivores),
+            predators: (self.predators, other.predators),
+        }
+    }
+
     pub fn into_array(self) -> [T; 3] {
         [self.plants, self.herbivores, self.predators]
+    }
+}
+
+impl<T> CellCounts<Option<T>> {
+    pub fn transpose(self) -> Option<CellCounts<T>> {
+        match (self.plants, self.herbivores, self.predators) {
+            (Some(plants), Some(herbivores), Some(predators)) => Some(CellCounts {
+                plants,
+                herbivores,
+                predators,
+            }),
+            (None, None, None) => None,
+            _ => unreachable!("SoA columns in CellCounts have mismatched lengths"),
+        }
     }
 }
 

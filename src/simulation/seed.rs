@@ -6,7 +6,7 @@ use rand::{RngExt, distr::Distribution, seq::WeightError};
 use crate::grid::{Facing, GridPosition, GridSize};
 
 use super::{
-    ResetSimulation, SimulationTickCount,
+    ResetSimulation, SimulationTickCount, WorldSeeded,
     organism::{EntityKind, Herbivore, Plant, Predator},
     spatial::SpatialGrid,
 };
@@ -72,6 +72,7 @@ pub(super) fn seed_world(
 ) {
     spatial_grid.resize_and_clear(*field_size);
     populate_grid(&mut commands, &mut spatial_grid, *field_size, *config);
+    commands.trigger(WorldSeeded);
 }
 
 #[allow(clippy::type_complexity)]
@@ -87,6 +88,7 @@ pub(super) fn on_reset_simulation(
     tick_count.0 = 0;
     spatial_grid.resize_and_clear(*field_size);
     populate_grid(&mut commands, &mut spatial_grid, *field_size, *config);
+    commands.trigger(WorldSeeded);
 }
 
 fn populate_grid(
