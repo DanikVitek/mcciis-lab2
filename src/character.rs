@@ -1,4 +1,8 @@
-use core::num::NonZeroU32;
+use core::{
+    iter::Sum,
+    num::NonZeroU32,
+    ops::{AddAssign, Index, IndexMut},
+};
 
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
@@ -230,11 +234,121 @@ pub enum EntityKind {
     Predator,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Resource)]
+pub struct CharacterCounts {
+    pub herbivores: u32,
+    pub predators: u32,
+}
+
+impl<T> From<CellCounts<T>> for CharacterCounts
+where
+    u32: From<T>,
+{
+    fn from(value: CellCounts<T>) -> Self {
+        Self {
+            herbivores: value.herbivores.into(),
+            predators: value.predators.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Resource)]
+struct CellCounts<T> {
+    plants: T,
+    herbivores: T,
+    predators: T,
+}
+
+impl<T> CellCounts<T> {
+    pub fn map<F, U>(self, mut f: F) -> CellCounts<U>
+    where
+        F: FnMut(T) -> U,
+    {
+        CellCounts {
+            plants: f(self.plants),
+            herbivores: f(self.herbivores),
+            predators: f(self.predators),
+        }
+    }
+
+    pub fn into_array(self) -> [T; 3] {
+        [self.plants, self.herbivores, self.predators]
+    }
+}
+
+impl<T> Index<EntityKind> for CellCounts<T> {
+    type Output = T;
+
+    fn index(&self, index: EntityKind) -> &Self::Output {
+        match index {
+            EntityKind::Plant => &self.plants,
+            EntityKind::Herbivore => &self.herbivores,
+            EntityKind::Predator => &self.predators,
+        }
+    }
+}
+
+impl<T> IndexMut<EntityKind> for CellCounts<T> {
+    fn index_mut(&mut self, index: EntityKind) -> &mut Self::Output {
+        match index {
+            EntityKind::Plant => &mut self.plants,
+            EntityKind::Herbivore => &mut self.herbivores,
+            EntityKind::Predator => &mut self.predators,
+        }
+    }
+}
+
+impl<T, U> AddAssign<CellCounts<U>> for CellCounts<T>
+where
+    T: From<U>,
+    T: AddAssign,
+{
+    fn add_assign(&mut self, rhs: CellCounts<U>) {
+        self.plants += T::from(rhs.plants);
+        self.herbivores += T::from(rhs.herbivores);
+        self.predators += T::from(rhs.predators);
+    }
+}
+
+impl<T, U> Sum<CellCounts<U>> for CellCounts<T>
+where
+    Self: AddAssign<CellCounts<U>> + Default,
+{
+    fn sum<I: Iterator<Item = CellCounts<U>>>(iter: I) -> Self {
+        iter.fold(Self::default(), |mut acc, item| {
+            acc += item;
+            acc
+        })
+    }
+}
+
+impl<T> AddAssign<CellCounts<T>> for CharacterCounts
+where
+    u32: From<T>,
+{
+    fn add_assign(&mut self, rhs: CellCounts<T>) {
+        self.herbivores += u32::from(rhs.herbivores);
+        self.predators += u32::from(rhs.predators);
+    }
+}
+
+impl<T> Sum<CellCounts<T>> for CharacterCounts
+where
+    Self: AddAssign<CellCounts<T>> + Default,
+{
+    fn sum<I: Iterator<Item = CellCounts<T>>>(iter: I) -> Self {
+        iter.fold(Self::default(), |mut acc, item| {
+            acc += item;
+            acc
+        })
+    }
+}
+
 #[derive(Resource)]
 pub struct SpatialGrid {
     size: GridSize,
     /// Hot array for `Brain` inputs: `[plants, herbivores, predators]` per tile
-    counts: Vec<[u16; 3]>,
+    counts: Vec<CellCounts<u16>>,
     /// Cold array for `Action::Consume`: entities currently standing on each tile
     entities: Vec<Vec<(Entity, EntityKind)>>,
 }
@@ -244,7 +358,7 @@ impl SpatialGrid {
         let len = usize::from(size.x) * usize::from(size.y);
         Self {
             size,
-            counts: vec![[0; 3]; len],
+            counts: vec![CellCounts::default(); len],
             entities: vec![Vec::new(); len],
         }
     }
@@ -255,7 +369,7 @@ impl SpatialGrid {
     }
 
     pub fn clear(&mut self) {
-        self.counts.fill([0; 3]);
+        self.counts.fill(CellCounts::default());
         for cell in &mut self.entities {
             cell.clear();
         }
@@ -263,7 +377,7 @@ impl SpatialGrid {
 
     pub fn insert(&mut self, pos: GridPosition, entity: Entity, kind: EntityKind) {
         let i = self.idx(pos);
-        self.counts[i][kind as usize] += 1;
+        self.counts[i][kind] += 1;
         self.entities[i].push((entity, kind));
     }
 
@@ -272,7 +386,7 @@ impl SpatialGrid {
         let cell = &mut self.entities[i];
         if let Some(pos_in_vec) = cell.iter().position(|&(e, _)| e == entity) {
             cell.swap_remove(pos_in_vec);
-            self.counts[i][kind as usize] -= 1;
+            self.counts[i][kind] -= 1;
             true
         } else {
             false
@@ -303,24 +417,22 @@ impl SpatialGrid {
         facing: Facing,
         self_kind: EntityKind,
         offsets: &[I16Vec2],
-    ) -> [u32; 3] {
-        let mut total = [0u32; 3];
+    ) -> CellCounts<u32> {
+        offsets
+            .iter()
+            .copied()
+            .map(|offset| {
+                let target = origin.add_wrapping_rotated_offset(offset, facing, self.size);
+                let mut cell_counts = self.counts[self.idx(target)];
 
-        for &offset in offsets {
-            let target = origin.add_wrapping_rotated_offset(offset, facing, self.size);
-            let cell_counts = self.counts[self.idx(target)];
+                // Do not count the sensing character itself on its own tile (0, 0) in `near`
+                if offset == I16Vec2::ZERO {
+                    cell_counts[self_kind] = cell_counts[self_kind].saturating_sub(1);
+                }
 
-            total[0] += u32::from(cell_counts[0]);
-            total[1] += u32::from(cell_counts[1]);
-            total[2] += u32::from(cell_counts[2]);
-
-            // Do not count the sensing character itself on its own tile (0, 0) in `near`
-            if offset == I16Vec2::ZERO {
-                total[self_kind as usize] = total[self_kind as usize].saturating_sub(1);
-            }
-        }
-
-        total
+                cell_counts
+            })
+            .sum()
     }
 
     /// Computes all 12 inputs (4 zones × 3 entity kinds) for `Brain::act_on`.
@@ -331,21 +443,30 @@ impl SpatialGrid {
         self_kind: EntityKind,
         sensors: &SensorOffsets,
     ) -> BrainInputs {
+        #[inline]
+        fn normalized_count(n: u32, len: usize) -> f32 {
+            let res = f64::from(n) / f64::from(u16::try_from(len).unwrap());
+            res as f32
+        }
+
         let f = self
             .count_zone(origin, facing, self_kind, &sensors.front)
-            .map(|n| n as f32);
+            .map(|n| normalized_count(n, sensors.front.len()))
+            .into_array();
         let l = self
             .count_zone(origin, facing, self_kind, &sensors.left)
-            .map(|n| n as f32);
+            .map(|n| normalized_count(n, sensors.left.len()))
+            .into_array();
         let r = self
             .count_zone(origin, facing, self_kind, &sensors.right)
-            .map(|n| n as f32);
+            .map(|n| normalized_count(n, sensors.right.len()))
+            .into_array();
         let n = self
             .count_zone(origin, facing, self_kind, &sensors.near)
-            .map(|n| n as f32);
+            .map(|n| normalized_count(n, sensors.near.len()))
+            .into_array();
 
-        let arr_storage = ArrayStorage([f, l, r, n]).reshape_generic(Const, Const);
-        BrainInputs::from_array_storage(arr_storage)
+        BrainInputs::from_array_storage(ArrayStorage([f, l, r, n]).reshape_generic(Const, Const))
     }
 
     /// Finds the first entity of `target_kind` in the agent's `near` zone for `Action::Consume`.
@@ -360,7 +481,7 @@ impl SpatialGrid {
         for &offset in near_offsets {
             let target_pos = origin.add_wrapping_rotated_offset(offset, facing, self.size);
             let i = self.idx(target_pos);
-            if self.counts[i][target_kind as usize] == 0 {
+            if self.counts[i][target_kind] == 0 {
                 continue;
             }
             for &(entity, kind) in &self.entities[i] {
@@ -370,6 +491,10 @@ impl SpatialGrid {
             }
         }
         None
+    }
+
+    pub fn character_counts(&self) -> CharacterCounts {
+        self.counts.iter().copied().sum()
     }
 }
 
