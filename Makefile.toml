@@ -41,19 +41,35 @@
 # [tasks.pre-build]
 # dependencies = ["clean-if-large"]
 
+[tasks.build-dev]
+private = true
+condition = { profiles = ["development"] }
+command = "cargo"
+args = ["build", "-F", "dev"]
+# dependencies = ["clean"]
+
+[tasks.build-prod]
+private = true
+condition = { profiles = ["production"] }
+command = "cargo"
+args = ["build", "--release"]
+# dependencies = ["clean"]
+
+[tasks.build]
+clear = true
+dependencies = ["build-dev", "build-prod"]
+
 [tasks.run-dev]
 private = true
 condition = { profiles = ["development"] }
 command = "cargo"
 args = ["run", "-F", "dev"]
-# dependencies = ["clean"]
 
 [tasks.run-prod]
 private = true
 condition = { profiles = ["production"] }
 command = "cargo"
 args = ["run", "--release"]
-# dependencies = ["clean"]
 
 [tasks.run]
 dependencies = ["run-dev", "run-prod"]
