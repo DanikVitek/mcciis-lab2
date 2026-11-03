@@ -7,16 +7,142 @@ use std::sync::{
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use life_sim::{
-    grid::GridSize,
+    grid::{GridPosition, GridSize},
     presentation::ui::inspector::{BrainInspectorUiPlugin, CharacterInspector, InspectedCharacter},
     simulation::{
         DistributionConfig, HeadlessRunnerPlugin, HistoryRecorderPlugin, ResetSimulation,
         SampleRate, SimulationHistory, SimulationPlugin, SimulationSystems, SimulationTick,
-        SimulationTickCount, StepSimulationOnce,
-        organism::{Herbivore, Plant, Predator},
-        spatial::SpatialGrid,
+        SimulationTickCount, StepSimulationOnce, WorldSeeded,
+        organism::{EntityKind, Herbivore, Plant, Predator},
+        spatial::{CellCounts, SpatialGrid},
     },
 };
+
+/// Deterministic mock replacement for [`SimulationPlugin`] used to test [`HistoryRecorderPlugin`]
+/// without any randomness from organism brains, movement, or reproduction.
+struct MockSimulationPlugin {
+    grid_size: GridSize,
+    initial_counts: CellCounts<u32>,
+    /// Predicate deciding whether the mock world mutates its population on a given 1-based tick.
+    mutate_on_tick: fn(u64) -> bool,
+}
+
+#[derive(Resource, Clone, Copy)]
+struct MockSimConfig {
+    grid_size: GridSize,
+    initial_counts: CellCounts<u32>,
+    mutate_on_tick: fn(u64) -> bool,
+}
+
+impl MockSimulationPlugin {
+    const fn new(initial_counts: CellCounts<u32>) -> Self {
+        Self {
+            grid_size: GridSize::new(10, 10),
+            initial_counts,
+            mutate_on_tick: |_| true,
+        }
+    }
+
+    const fn with_tick_predicate(
+        initial_counts: CellCounts<u32>,
+        mutate_on_tick: fn(u64) -> bool,
+    ) -> Self {
+        Self {
+            grid_size: GridSize::new(10, 10),
+            initial_counts,
+            mutate_on_tick,
+        }
+    }
+}
+
+impl Plugin for MockSimulationPlugin {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(self.grid_size)
+            .insert_resource(SpatialGrid::new(self.grid_size))
+            .insert_resource(MockSimConfig {
+                grid_size: self.grid_size,
+                initial_counts: self.initial_counts,
+                mutate_on_tick: self.mutate_on_tick,
+            })
+            .init_resource::<SimulationTickCount>()
+            .init_schedule(SimulationTick)
+            .configure_sets(
+                SimulationTick,
+                (
+                    SimulationSystems::Step,
+                    SimulationSystems::Reproduce,
+                    SimulationSystems::Record,
+                )
+                    .chain(),
+            )
+            .add_systems(Startup, mock_seed_world)
+            .add_systems(
+                SimulationTick,
+                (
+                    mock_step_world.in_set(SimulationSystems::Step),
+                    mock_advance_tick_counter
+                        .after_ignore_deferred(SimulationSystems::Reproduce)
+                        .before_ignore_deferred(SimulationSystems::Record),
+                ),
+            )
+            .add_observer(mock_on_reset_simulation);
+    }
+}
+
+fn populate_mock_grid(spatial_grid: &mut SpatialGrid, counts: CellCounts<u32>) {
+    let origin = GridPosition::new(0, 0);
+    for _ in 0..counts.plants {
+        spatial_grid.insert(origin, Entity::PLACEHOLDER, EntityKind::Plant);
+    }
+    for _ in 0..counts.herbivores {
+        spatial_grid.insert(origin, Entity::PLACEHOLDER, EntityKind::Herbivore);
+    }
+    for _ in 0..counts.predators {
+        spatial_grid.insert(origin, Entity::PLACEHOLDER, EntityKind::Predator);
+    }
+}
+
+fn mock_seed_world(
+    mut commands: Commands,
+    mut spatial_grid: ResMut<SpatialGrid>,
+    config: Res<MockSimConfig>,
+) {
+    spatial_grid.resize_and_clear(config.grid_size);
+    populate_mock_grid(&mut spatial_grid, config.initial_counts);
+    commands.trigger(WorldSeeded);
+}
+
+fn mock_on_reset_simulation(
+    _reset: On<ResetSimulation>,
+    mut commands: Commands,
+    mut spatial_grid: ResMut<SpatialGrid>,
+    mut tick_count: ResMut<SimulationTickCount>,
+    config: Res<MockSimConfig>,
+) {
+    tick_count.0 = 0;
+    spatial_grid.resize_and_clear(config.grid_size);
+    populate_mock_grid(&mut spatial_grid, config.initial_counts);
+    commands.trigger(WorldSeeded);
+}
+
+fn mock_step_world(
+    mut spatial_grid: ResMut<SpatialGrid>,
+    tick_count: Res<SimulationTickCount>,
+    config: Res<MockSimConfig>,
+) {
+    let upcoming_tick = tick_count.0 + 1;
+    if (config.mutate_on_tick)(upcoming_tick) {
+        spatial_grid.insert(
+            GridPosition::new(0, 0),
+            Entity::PLACEHOLDER,
+            EntityKind::Herbivore,
+        );
+    }
+}
+
+fn mock_advance_tick_counter(mut ticks: ResMut<SimulationTickCount>) {
+    ticks.0 += 1;
+}
 
 #[test]
 fn headless_simulation_runs_without_fixed_update_or_graphics() {
@@ -203,21 +329,13 @@ fn brain_inspector_reads_snapshot_and_clears_on_character_death() {
 
 #[test]
 fn history_recorder_tracks_baseline_ticks_and_resets() {
-    let dist = DistributionConfig::builder()
-        .plants_fraction(0.2)
-        .herbivores_fraction(0.1)
-        .predators_fraction(0.05)
-        .build()
-        .unwrap();
-
     let mut app = App::new();
     app.add_plugins((
-        SimulationPlugin::builder()
-            .grid_size(GridSize::new(10, 10))
-            .distribution(dist)
-            .initial_energy(50)
-            .max_energy(100)
-            .build(),
+        MockSimulationPlugin::new(CellCounts {
+            plants: 20,
+            herbivores: 10,
+            predators: 5,
+        }),
         HistoryRecorderPlugin::default(),
     ));
     app.update();
@@ -267,21 +385,13 @@ fn history_recorder_tracks_baseline_ticks_and_resets() {
 
 #[test]
 fn sample_rate_skips_non_multiple_ticks_and_preserves_rate_across_reset() {
-    let dist = DistributionConfig::builder()
-        .plants_fraction(0.15)
-        .herbivores_fraction(0.1)
-        .predators_fraction(0.05)
-        .build()
-        .unwrap();
-
     let mut app = App::new();
     app.add_plugins((
-        SimulationPlugin::builder()
-            .grid_size(GridSize::new(10, 10))
-            .distribution(dist)
-            .initial_energy(50)
-            .max_energy(100)
-            .build(),
+        MockSimulationPlugin::new(CellCounts {
+            plants: 15,
+            herbivores: 10,
+            predators: 5,
+        }),
         HistoryRecorderPlugin::every(NonZeroU64::new(5).unwrap()),
     ));
     app.update();
@@ -313,21 +423,13 @@ fn sample_rate_skips_non_multiple_ticks_and_preserves_rate_across_reset() {
 
 #[test]
 fn sample_rate_exceeding_run_length_keeps_only_baseline_sample() {
-    let dist = DistributionConfig::builder()
-        .plants_fraction(0.1)
-        .herbivores_fraction(0.1)
-        .predators_fraction(0.0)
-        .build()
-        .unwrap();
-
     let mut app = App::new();
     app.add_plugins((
-        SimulationPlugin::builder()
-            .grid_size(GridSize::new(10, 10))
-            .distribution(dist)
-            .initial_energy(50)
-            .max_energy(100)
-            .build(),
+        MockSimulationPlugin::new(CellCounts {
+            plants: 10,
+            herbivores: 10,
+            predators: 0,
+        }),
         HistoryRecorderPlugin::every(NonZeroU64::new(50).unwrap()),
     ));
     app.update();
@@ -346,22 +448,14 @@ fn sample_rate_can_change_at_runtime_and_only_marks_history_changed_on_sample_ti
     #[derive(Resource, Default)]
     struct ChangedTicks(Vec<u64>);
 
-    let dist = DistributionConfig::builder()
-        .plants_fraction(0.15)
-        .herbivores_fraction(0.1)
-        .predators_fraction(0.05)
-        .build()
-        .unwrap();
-
     let mut app = App::new();
     app.init_resource::<ChangedTicks>()
         .add_plugins((
-            SimulationPlugin::builder()
-                .grid_size(GridSize::new(10, 10))
-                .distribution(dist)
-                .initial_energy(50)
-                .max_energy(100)
-                .build(),
+            MockSimulationPlugin::new(CellCounts {
+                plants: 15,
+                herbivores: 10,
+                predators: 5,
+            }),
             HistoryRecorderPlugin::every(NonZeroU64::new(2).unwrap()),
         ))
         .add_systems(
@@ -407,4 +501,30 @@ fn sample_rate_can_change_at_runtime_and_only_marks_history_changed_on_sample_ti
         app.world().resource::<ChangedTicks>().0,
         &[2, 4, 6, 10, 15, 17, 18, 19]
     );
+}
+
+#[test]
+fn history_recorder_deduplicates_unchanged_samples_while_updating_last_tick() {
+    let mut app = App::new();
+    app.add_plugins((
+        MockSimulationPlugin::with_tick_predicate(
+            CellCounts {
+                plants: 10,
+                herbivores: 5,
+                predators: 2,
+            },
+            |tick| matches!(tick, 2 | 5),
+        ),
+        HistoryRecorderPlugin::default(),
+    ));
+    app.update();
+
+    for _ in 0..7 {
+        app.world_mut().run_schedule(SimulationTick);
+    }
+
+    let history = app.world().resource::<SimulationHistory>();
+    assert_eq!(history.tick_history(), &[0, 2, 5]);
+    assert_eq!(history.last_tick(), Some(7));
+    assert_eq!(history.counts_history().herbivores, &[5, 6, 7]);
 }
