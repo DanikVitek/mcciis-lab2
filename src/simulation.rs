@@ -12,9 +12,12 @@ use bevy::prelude::*;
 use crate::grid::GridSize;
 
 pub use self::history::{HistoryRecorderPlugin, HistorySample, SampleRate, SimulationHistory};
-use self::organism::CharacterFilter;
 pub use self::seed::{DistributionConfig, DistributionError};
 use self::spatial::SpatialGrid;
+use self::{
+    brain::{DistributedMutation, MutationStrategy},
+    organism::CharacterFilter,
+};
 
 /// Run condition returning `true` while at least one character organism (`Herbivore` or `Predator`) is alive.
 pub fn has_living_organisms(organisms: Query<(), CharacterFilter>) -> bool {
@@ -80,6 +83,7 @@ impl Plugin for SimulationPlugin {
         app.insert_resource(self.grid_size)
             .insert_resource(self.distribution)
             .insert_resource(SpatialGrid::new(self.grid_size))
+            .insert_resource(MutationStrategy::new(DistributedMutation::new(0.5)))
             .init_resource::<SimulationTickCount>()
             .init_schedule(SimulationTick)
             .configure_sets(

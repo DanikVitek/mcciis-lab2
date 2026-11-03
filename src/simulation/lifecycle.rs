@@ -6,7 +6,7 @@ use rand::seq::IndexedRandom;
 use crate::grid::{Facing, GridPosition, GridSize};
 
 use super::{
-    brain::{Action, Brain, SensorOffsets, sense_brain_inputs},
+    brain::{Action, Brain, Mutation, MutationStrategy, SensorOffsets, sense_brain_inputs},
     organism::{Age, Energy, EntityKind, Generation, Herbivore, Plant, Predator, ValueAsFood},
     spatial::SpatialGrid,
 };
@@ -122,6 +122,7 @@ pub(super) fn reproduction(
     mut commands: Commands,
     mut spatial_grid: ResMut<SpatialGrid>,
     field_size: Res<GridSize>,
+    mutation_strategy: Res<MutationStrategy>,
     query: Query<(
         Entity,
         &mut Energy,
@@ -158,7 +159,7 @@ pub(super) fn reproduction(
         .unwrap();
 
         let child_pos = pos.add_wrapping_signed(I16Vec2::from_array(offset), *field_size);
-        let child_brain = brain.mutated(&mut rng);
+        let child_brain = Mutation::apply(&*mutation_strategy, brain);
         let child_gen = generation.next();
 
         let res = energy.distribute();

@@ -1,10 +1,13 @@
+use core::fmt;
+use std::sync::Arc;
+
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
 use itertools::Itertools;
 use nalgebra::{ArrayStorage, Const, ReshapableStorage, SMatrix, SVector};
 use rand::{
     Rng, RngExt,
-    distr::{Distribution, StandardUniform},
+    distr::{Distribution, StandardUniform, Uniform},
 };
 
 use crate::grid::{Facing, GridPosition};
@@ -78,9 +81,10 @@ pub type BrainOutputs = SVector<f32, OUTPUTS>;
 
 impl Distribution<Brain> for StandardUniform {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Brain {
+        let distr = Uniform::new_inclusive(-1.0, 1.0).unwrap();
         Brain {
-            weights: rng.random(),
-            biases: rng.random(),
+            weights: BrainWeights::from_distribution(&distr, rng),
+            biases: BrainBiases::from_distribution(&distr, rng),
         }
     }
 }
@@ -127,28 +131,79 @@ impl Brain {
     pub fn act_on(&self, inputs: BrainInputs) -> Action {
         Action::from_outputs(self.compute(inputs))
     }
+}
 
-    pub fn mutated<R: Rng>(&self, rng: &mut R) -> Self {
+pub trait Mutation: fmt::Debug + Sync + Send {
+    fn apply(&self, old: &Brain) -> Brain;
+}
+
+#[derive(Debug, Clone, Resource)]
+pub struct MutationStrategy(Arc<dyn Mutation>);
+
+impl MutationStrategy {
+    #[inline]
+    pub fn new<M: Mutation + 'static>(strategy: M) -> Self {
+        Self(Arc::new(strategy))
+    }
+}
+
+impl Mutation for MutationStrategy {
+    fn apply(&self, old: &Brain) -> Brain {
+        self.0.apply(old)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
+pub struct SingleNeuronMutation;
+
+impl Mutation for SingleNeuronMutation {
+    fn apply(&self, old: &Brain) -> Brain {
+        let mut rng = rand::rng();
+
         let what_to_mutate = rng.random_range(0..((INPUTS + 1) * OUTPUTS));
+        let mut new = old.clone();
+
         if (0..(INPUTS * OUTPUTS)).contains(&what_to_mutate) {
-            let mut weights = self.weights;
-
-            weights[what_to_mutate] = rng.random();
-
-            Self {
-                weights,
-                biases: self.biases,
-            }
+            new.weights[what_to_mutate] = rng.random_range(-1.0..=1.0);
         } else {
-            let mut biases = self.biases;
-
-            biases[what_to_mutate - INPUTS * OUTPUTS] = rng.random();
-
-            Self {
-                weights: self.weights,
-                biases,
-            }
+            new.biases[what_to_mutate - INPUTS * OUTPUTS] = rng.random();
         }
+
+        new
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct DistributedMutation {
+    pub offset: f32,
+}
+
+impl Default for DistributedMutation {
+    fn default() -> Self {
+        Self::new(0.5)
+    }
+}
+
+impl DistributedMutation {
+    pub const fn new(offset: f32) -> Self {
+        Self { offset }
+    }
+}
+
+impl Mutation for DistributedMutation {
+    fn apply(&self, old: &Brain) -> Brain {
+        let mut rng = rand::rng();
+
+        let mut new = old.clone();
+
+        for w in &mut new.weights {
+            *w += rng.random_range(-self.offset..=self.offset)
+        }
+        for b in &mut new.biases {
+            *b += rng.random_range(-self.offset..=self.offset)
+        }
+
+        new
     }
 }
 
