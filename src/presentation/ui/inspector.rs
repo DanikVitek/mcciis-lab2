@@ -12,7 +12,9 @@ use crate::{
             Action, Brain, BrainInputs, BrainOutputs, INPUTS, OUTPUTS, SensorOffsets,
             sense_brain_inputs,
         },
-        organism::{Age, Energy, EntityKind, Generation, Herbivore, Predator, ValueAsFood},
+        organism::{
+            Age, Energy, EntityKind, Generation, Herbivore, MaxEnergy, Predator, ValueAsFood,
+        },
         spatial::SpatialGrid,
     },
 };
@@ -205,6 +207,7 @@ fn render_inspector_panels(
     mut contexts: EguiContexts,
     inspector: CharacterInspector,
     plot_open: Res<HistoryPlotOpen>,
+    max_energy: Res<MaxEnergy>,
     mut commands: Commands,
 ) -> Result {
     if plot_open.0 {
@@ -242,7 +245,13 @@ fn render_inspector_panels(
         )
         .show(ctx, |ui| {
             ui.set_width(panel_width);
-            render_pov_panel_contents(ui, &snapshot, &inspector.spatial_grid, &mut should_unfollow);
+            render_pov_panel_contents(
+                ui,
+                &snapshot,
+                &inspector.spatial_grid,
+                *max_energy,
+                &mut should_unfollow,
+            );
         });
 
     // --- 2. Lower-Right Panel: Neural Network Processing Diagram ---
@@ -291,6 +300,7 @@ fn render_pov_panel_contents(
     ui: &mut egui::Ui,
     snapshot: &CharacterBrainSnapshot<'_>,
     spatial_grid: &SpatialGrid,
+    max_energy: MaxEnergy,
     should_unfollow: &mut bool,
 ) {
     let (species_name, species_color) = match snapshot.kind {
@@ -331,7 +341,7 @@ fn render_pov_panel_contents(
     });
 
     let energy_cur = snapshot.energy.current();
-    let energy_frac = f32::from(energy_cur) / f32::from(Energy::MAX.current());
+    let energy_frac = f32::from(energy_cur) / f32::from(max_energy.0);
     ui.add_space(2.0);
     ui.add(
         egui::ProgressBar::new(energy_frac)
@@ -339,8 +349,8 @@ fn render_pov_panel_contents(
             .text(format!(
                 "Energy: {} / {} (-1/tick, repro ≥ {})",
                 energy_cur,
-                Energy::MAX.current(),
-                Energy::REPRODUCTION_THRESHOLD
+                max_energy,
+                max_energy.0 as f32 * Energy::REPRO_THRESHOLD
             )),
     );
 

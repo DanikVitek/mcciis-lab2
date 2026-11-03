@@ -1,4 +1,4 @@
-use core::num::NonZeroU32;
+use core::{fmt, num::NonZeroU32};
 
 use bevy::prelude::*;
 
@@ -14,7 +14,6 @@ pub struct Plant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
 #[require(
     Age,
-    Energy,
     ValueAsFood(2),
     Generation,
     Brain = rand::random::<Brain>(),
@@ -24,7 +23,6 @@ pub struct Herbivore;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
 #[require(
     Age,
-    Energy,
     Generation,
     Brain = rand::random::<Brain>(),
 )]
@@ -54,9 +52,39 @@ impl Age {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
 pub struct Energy(u8);
 
-impl Default for Energy {
-    fn default() -> Self {
-        Self(50)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Resource)]
+pub struct InitialEnergy(pub u8);
+
+impl From<u8> for InitialEnergy {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl From<InitialEnergy> for Energy {
+    fn from(value: InitialEnergy) -> Self {
+        Self(value.0)
+    }
+}
+
+impl fmt::Display for InitialEnergy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Resource)]
+pub struct MaxEnergy(pub u8);
+
+impl From<u8> for MaxEnergy {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl fmt::Display for MaxEnergy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 
@@ -86,15 +114,14 @@ impl<T> DecrementResult<T> {
 }
 
 impl Energy {
-    pub const MAX: Self = Self(100);
-    pub const REPRODUCTION_THRESHOLD: u8 = 90;
+    pub const REPRO_THRESHOLD: f32 = 0.9;
 
     pub const fn current(self) -> u8 {
         self.0
     }
 
-    pub fn increment(&mut self, ValueAsFood(value): ValueAsFood) {
-        self.0 = Self::MAX.0.min(self.0 + value);
+    pub fn increment(&mut self, ValueAsFood(value): ValueAsFood, MaxEnergy(max): MaxEnergy) {
+        self.0 = u8::min(max, self.0.saturating_add(value));
     }
 
     pub fn decrement(&mut self) -> DecrementResult<()> {
@@ -106,8 +133,8 @@ impl Energy {
         }
     }
 
-    pub const fn is_enough_to_reproduce(self) -> bool {
-        self.0 >= Self::REPRODUCTION_THRESHOLD
+    pub const fn is_enough_to_reproduce(self, MaxEnergy(max): MaxEnergy) -> bool {
+        self.0 >= (max as f32 * Self::REPRO_THRESHOLD) as u8
     }
 
     pub fn distribute(&mut self) -> DecrementResult<Energy> {

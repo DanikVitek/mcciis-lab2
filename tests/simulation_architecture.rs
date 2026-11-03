@@ -28,7 +28,14 @@ fn headless_simulation_runs_without_fixed_update_or_graphics() {
         .unwrap();
 
     let mut app = App::new();
-    app.add_plugins(SimulationPlugin::new(GridSize::new(20, 20), dist));
+    app.add_plugins(
+        SimulationPlugin::builder()
+            .grid_size(GridSize::new(20, 20))
+            .distribution(dist)
+            .initial_energy(50)
+            .max_energy(100)
+            .build(),
+    );
 
     // Runs `Startup` (`seed_world`) once.
     app.update();
@@ -82,7 +89,12 @@ fn headless_runner_plugin_exits_at_target_ticks() {
     let mut app = App::new();
     app.add_plugins((
         MinimalPlugins,
-        SimulationPlugin::new(GridSize::new(16, 16), dist),
+        SimulationPlugin::builder()
+            .grid_size(GridSize::new(16, 16))
+            .distribution(dist)
+            .initial_energy(50)
+            .max_energy(100)
+            .build(),
         HeadlessRunnerPlugin::for_ticks(25),
     ))
     .add_systems(Last, move |ticks: Res<SimulationTickCount>| {
@@ -105,7 +117,14 @@ fn reset_and_step_once_events_reconfigure_and_advance_world() {
         .unwrap();
 
     let mut app = App::new();
-    app.add_plugins(SimulationPlugin::new(GridSize::new(10, 10), dist));
+    app.add_plugins(
+        SimulationPlugin::builder()
+            .grid_size(GridSize::new(10, 10))
+            .distribution(dist)
+            .initial_energy(50)
+            .max_energy(100)
+            .build(),
+    );
     app.update();
 
     app.world_mut().trigger(StepSimulationOnce);
@@ -144,7 +163,12 @@ fn brain_inspector_reads_snapshot_and_clears_on_character_death() {
 
     let mut app = App::new();
     app.add_plugins((
-        SimulationPlugin::new(GridSize::new(10, 10), dist),
+        SimulationPlugin::builder()
+            .grid_size(GridSize::new(10, 10))
+            .distribution(dist)
+            .initial_energy(50)
+            .max_energy(100)
+            .build(),
         BrainInspectorUiPlugin,
     ));
     app.update();
@@ -188,7 +212,12 @@ fn history_recorder_tracks_baseline_ticks_and_resets() {
 
     let mut app = App::new();
     app.add_plugins((
-        SimulationPlugin::new(GridSize::new(10, 10), dist),
+        SimulationPlugin::builder()
+            .grid_size(GridSize::new(10, 10))
+            .distribution(dist)
+            .initial_energy(50)
+            .max_energy(100)
+            .build(),
         HistoryRecorderPlugin::default(),
     ));
     app.update();
@@ -247,7 +276,12 @@ fn sample_rate_skips_non_multiple_ticks_and_preserves_rate_across_reset() {
 
     let mut app = App::new();
     app.add_plugins((
-        SimulationPlugin::new(GridSize::new(10, 10), dist),
+        SimulationPlugin::builder()
+            .grid_size(GridSize::new(10, 10))
+            .distribution(dist)
+            .initial_energy(50)
+            .max_energy(100)
+            .build(),
         HistoryRecorderPlugin::every(NonZeroU64::new(5).unwrap()),
     ));
     app.update();
@@ -288,7 +322,12 @@ fn sample_rate_exceeding_run_length_keeps_only_baseline_sample() {
 
     let mut app = App::new();
     app.add_plugins((
-        SimulationPlugin::new(GridSize::new(10, 10), dist),
+        SimulationPlugin::builder()
+            .grid_size(GridSize::new(10, 10))
+            .distribution(dist)
+            .initial_energy(50)
+            .max_energy(100)
+            .build(),
         HistoryRecorderPlugin::every(NonZeroU64::new(50).unwrap()),
     ));
     app.update();
@@ -317,7 +356,12 @@ fn sample_rate_can_change_at_runtime_and_only_marks_history_changed_on_sample_ti
     let mut app = App::new();
     app.init_resource::<ChangedTicks>()
         .add_plugins((
-            SimulationPlugin::new(GridSize::new(10, 10), dist),
+            SimulationPlugin::builder()
+                .grid_size(GridSize::new(10, 10))
+                .distribution(dist)
+                .initial_energy(50)
+                .max_energy(100)
+                .build(),
             HistoryRecorderPlugin::every(NonZeroU64::new(2).unwrap()),
         ))
         .add_systems(

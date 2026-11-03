@@ -3,11 +3,14 @@ use bon::bon;
 use itertools::Itertools;
 use rand::{RngExt, distr::Distribution, seq::WeightError};
 
-use crate::grid::{Facing, GridPosition, GridSize};
+use crate::{
+    grid::{Facing, GridPosition, GridSize},
+    simulation::organism::Energy,
+};
 
 use super::{
     ResetSimulation, SimulationTickCount, WorldSeeded,
-    organism::{EntityKind, Herbivore, Plant, Predator},
+    organism::{EntityKind, Herbivore, InitialEnergy, Plant, Predator},
     spatial::SpatialGrid,
 };
 
@@ -69,9 +72,16 @@ pub(super) fn seed_world(
     mut spatial_grid: ResMut<SpatialGrid>,
     field_size: Res<GridSize>,
     config: Res<DistributionConfig>,
+    initial_energy: Res<InitialEnergy>,
 ) {
     spatial_grid.resize_and_clear(*field_size);
-    populate_grid(&mut commands, &mut spatial_grid, *field_size, *config);
+    populate_grid(
+        &mut commands,
+        &mut spatial_grid,
+        *field_size,
+        *config,
+        *initial_energy,
+    );
     commands.trigger(WorldSeeded);
 }
 
@@ -83,11 +93,18 @@ pub(super) fn on_reset_simulation(
     mut tick_count: ResMut<SimulationTickCount>,
     field_size: Res<GridSize>,
     config: Res<DistributionConfig>,
+    initial_energy: Res<InitialEnergy>,
 ) {
     commands.despawn_all::<Or<(With<Plant>, With<Herbivore>, With<Predator>)>>();
     tick_count.0 = 0;
     spatial_grid.resize_and_clear(*field_size);
-    populate_grid(&mut commands, &mut spatial_grid, *field_size, *config);
+    populate_grid(
+        &mut commands,
+        &mut spatial_grid,
+        *field_size,
+        *config,
+        *initial_energy,
+    );
     commands.trigger(WorldSeeded);
 }
 
@@ -96,6 +113,7 @@ fn populate_grid(
     spatial_grid: &mut SpatialGrid,
     field_size: GridSize,
     config: DistributionConfig,
+    initial_energy: InitialEnergy,
 ) {
     let tiles_total = u32::from(field_size.width()) * u32::from(field_size.height());
 
@@ -151,7 +169,9 @@ fn populate_grid(
                 let dir = rng.random::<Facing>();
                 match idx {
                     HERBIVORE => {
-                        let entity = commands.spawn((Herbivore, pos, dir)).id();
+                        let entity = commands
+                            .spawn((Herbivore, pos, dir, Energy::from(initial_energy)))
+                            .id();
                         spatial_grid.insert(pos, entity, EntityKind::Herbivore);
                         herbivores_total -= 1;
                         match dist.update_weights(&[(2, &herbivores_total)]) {
@@ -161,7 +181,9 @@ fn populate_grid(
                         }
                     }
                     PREDATOR => {
-                        let entity = commands.spawn((Predator, pos, dir)).id();
+                        let entity = commands
+                            .spawn((Predator, pos, dir, Energy::from(initial_energy)))
+                            .id();
                         spatial_grid.insert(pos, entity, EntityKind::Predator);
                         predators_total -= 1;
                         match dist.update_weights(&[(3, &predators_total)]) {

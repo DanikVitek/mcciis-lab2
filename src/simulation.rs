@@ -15,7 +15,7 @@ pub use self::brain::{DistributedMutation, Mutation, MutationStrategy, SingleNeu
 pub use self::history::{
     GenerationSample, HistoryRecorderPlugin, HistorySample, SampleRate, SimulationHistory,
 };
-use self::organism::CharacterFilter;
+use self::organism::{CharacterFilter, InitialEnergy, MaxEnergy};
 pub use self::seed::{DistributionConfig, DistributionError};
 use self::spatial::SpatialGrid;
 
@@ -64,21 +64,19 @@ pub struct ResetSimulation;
 pub struct StepSimulationOnce;
 
 /// Schedule-agnostic, headless-ready ecosystem simulation plugin.
+#[derive(bon::Builder)]
 pub struct SimulationPlugin {
     pub grid_size: GridSize,
     pub distribution: DistributionConfig,
+    #[builder(into)]
+    pub initial_energy: InitialEnergy,
+    #[builder(into)]
+    pub max_energy: MaxEnergy,
+    #[builder(into, default)]
     pub mutation_strategy: MutationStrategy,
 }
 
 impl SimulationPlugin {
-    pub fn new(grid_size: GridSize, distribution: DistributionConfig) -> Self {
-        Self {
-            grid_size,
-            distribution,
-            mutation_strategy: MutationStrategy::default(),
-        }
-    }
-
     #[inline]
     pub fn with_mutation(mut self, strategy: impl Into<MutationStrategy>) -> Self {
         self.mutation_strategy = strategy.into();
@@ -92,6 +90,8 @@ impl Plugin for SimulationPlugin {
             .insert_resource(self.distribution)
             .insert_resource(SpatialGrid::new(self.grid_size))
             .insert_resource(self.mutation_strategy)
+            .insert_resource(self.initial_energy)
+            .insert_resource(self.max_energy)
             .init_resource::<SimulationTickCount>()
             .init_schedule(SimulationTick)
             .configure_sets(

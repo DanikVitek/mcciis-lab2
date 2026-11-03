@@ -10,7 +10,9 @@ use crate::{
     simulation::{
         DistributedMutation, DistributionConfig, DistributionError, MutationStrategy,
         ResetSimulation, SimulationTickCount, SingleNeuronMutation, StepSimulationOnce,
-        history::SampleRate, spatial::SpatialGrid,
+        history::SampleRate,
+        organism::{InitialEnergy, MaxEnergy},
+        spatial::SpatialGrid,
     },
 };
 
@@ -23,6 +25,8 @@ pub struct SimConfig {
     pub plants_fraction: f32,
     pub herbivores_fraction: f32,
     pub predators_fraction: f32,
+    pub initial_energy: InitialEnergy,
+    pub max_energy: MaxEnergy,
     pub tick_interval: Duration,
     pub speed_mode: SimulationSpeedMode,
     pub mutation: MutationStrategy,
@@ -30,11 +34,13 @@ pub struct SimConfig {
 
 impl FromWorld for SimConfig {
     fn from_world(world: &mut World) -> Self {
-        let grid_size = *world.resource::<GridSize>();
+        let grid_size = *world.resource();
         let dist = *world.resource::<DistributionConfig>();
         let tick_interval = world.resource::<Time<Fixed>>().timestep();
-        let speed_mode = *world.resource::<SimulationSpeedMode>();
-        let mutation = *world.resource::<MutationStrategy>();
+        let speed_mode = *world.resource();
+        let mutation = *world.resource();
+        let initial_energy = *world.resource();
+        let max_energy = *world.resource();
 
         Self {
             grid_size,
@@ -44,6 +50,8 @@ impl FromWorld for SimConfig {
             tick_interval,
             speed_mode,
             mutation,
+            initial_energy,
+            max_energy,
         }
     }
 }
@@ -109,6 +117,8 @@ fn render_config_ui(
     mut fixed_time: ResMut<Time<Fixed>>,
     mut speed_mode: ResMut<SimulationSpeedMode>,
     mut mutation_strategy: ResMut<MutationStrategy>,
+    mut initial_energy: ResMut<InitialEnergy>,
+    mut max_energy: ResMut<MaxEnergy>,
     mut grid_size: ResMut<GridSize>,
     mut distribution: ResMut<DistributionConfig>,
     mut sample_rate: Option<ResMut<SampleRate>>,
@@ -233,12 +243,42 @@ fn render_config_ui(
             ui.add_space(6.0);
             ui.separator();
 
-            // --- 2. Mutation Strategy ---
+            // --- 2. Lifecycle ---
             ui.label(
-                egui::RichText::new("Mutation Strategy")
+                egui::RichText::new("Lifecycle")
                     .color(egui::Color32::from_rgb(170, 215, 255))
                     .strong(),
             );
+            ui.add_space(4.0);
+
+            let mut initial_energy_changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Initial energy:");
+                if ui
+                    .add(egui::DragValue::new(&mut config.initial_energy.0))
+                    .changed()
+                {
+                    initial_energy_changed = true;
+                }
+            });
+            if initial_energy_changed {
+                *initial_energy = config.initial_energy;
+            }
+            ui.add_space(4.0);
+
+            let mut max_energy_changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Max energy:");
+                if ui
+                    .add(egui::DragValue::new(&mut config.max_energy.0))
+                    .changed()
+                {
+                    max_energy_changed = true;
+                }
+            });
+            if max_energy_changed {
+                *max_energy = config.max_energy;
+            }
             ui.add_space(4.0);
 
             let mut mutation_changed = false;
@@ -247,7 +287,7 @@ fn render_config_ui(
                 MutationStrategy::Distributed { .. } => "Distributed",
             };
 
-            egui::ComboBox::from_label("Strategy")
+            egui::ComboBox::from_label("Mutation Strategy")
                 .selected_text(current_kind)
                 .show_ui(ui, |ui| {
                     if ui

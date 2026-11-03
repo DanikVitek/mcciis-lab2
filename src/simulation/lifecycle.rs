@@ -7,7 +7,9 @@ use crate::grid::{Facing, GridPosition, GridSize};
 
 use super::{
     brain::{Action, Brain, Mutation, MutationStrategy, SensorOffsets, sense_brain_inputs},
-    organism::{Age, Energy, EntityKind, Generation, Herbivore, Plant, Predator, ValueAsFood},
+    organism::{
+        Age, Energy, EntityKind, Generation, Herbivore, MaxEnergy, Plant, Predator, ValueAsFood,
+    },
     spatial::SpatialGrid,
 };
 
@@ -16,6 +18,7 @@ pub(super) fn step_organisms(
     mut commands: Commands,
     mut spatial_grid: ResMut<SpatialGrid>,
     field_size: Res<GridSize>,
+    max_energy: Res<MaxEnergy>,
     characters: Query<
         (
             Entity,
@@ -105,7 +108,7 @@ pub(super) fn step_organisms(
                     }
 
                     let value = food.get(target_entity).unwrap();
-                    energy.increment(*value);
+                    energy.increment(*value, *max_energy);
                 } else if energy.decrement().is_deceased() {
                     spatial_grid.remove(*pos, entity, self_kind);
                     commands.entity(entity).despawn();
@@ -122,6 +125,7 @@ pub(super) fn reproduction(
     mut commands: Commands,
     mut spatial_grid: ResMut<SpatialGrid>,
     field_size: Res<GridSize>,
+    max_energy: Res<MaxEnergy>,
     mutation_strategy: Res<MutationStrategy>,
     query: Query<(
         Entity,
@@ -135,7 +139,7 @@ pub(super) fn reproduction(
 ) {
     let mut rng = rand::rng();
     for (entity, mut energy, brain, pos, facing, generation, is_herbivore) in query {
-        if !energy.is_enough_to_reproduce() {
+        if !energy.is_enough_to_reproduce(*max_energy) {
             continue;
         }
 
