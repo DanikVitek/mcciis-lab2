@@ -21,6 +21,7 @@ pub struct HistorySample {
 /// (both on initial startup and on [`super::ResetSimulation`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
 pub struct SimulationHistory {
+    last_tick: Option<u64>,
     tick: Vec<u64>,
     counts: CellCounts<Vec<u32>>,
 }
@@ -46,7 +47,7 @@ impl SimulationHistory {
     }
 
     pub fn last_tick(&self) -> Option<u64> {
-        self.tick.last().copied()
+        self.last_tick
     }
 
     pub fn last_counts(&self) -> Option<CellCounts<u32>> {
@@ -92,6 +93,10 @@ impl SimulationHistory {
     }
 
     pub fn push(&mut self, HistorySample { tick, counts }: HistorySample) {
+        self.last_tick = Some(tick);
+        if self.last_counts().is_some_and(|it| it == counts) {
+            return;
+        }
         self.tick.push(tick);
         self.counts
             .as_mut()
