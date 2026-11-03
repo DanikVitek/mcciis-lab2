@@ -13,6 +13,14 @@ use super::pacing::SimulationSpeedMode;
 
 pub const TILE_SIZE: Vec2 = Vec2::splat(32.0);
 
+/// Darker deep-water blue used for both grid cell borders and the viewport area outside the grid.
+pub const WATER_DARK_COLOR: Color = Color::oklch(0.32, 0.075, 248.0);
+
+/// Lighter aquatic blue used for the interior of each grid cell.
+pub const WATER_CELL_COLOR: Color = Color::oklch(0.44, 0.088, 242.0);
+
+const GRID_BACKGROUND_Z: f32 = -1.0;
+
 /// World-space translation of tile `(0, 0)` so the entire [`GridSize`] field is centered at `(0, 0)`.
 pub fn grid_origin_offset(grid_size: GridSize) -> Vec2 {
     -TILE_SIZE * (grid_size.as_vec2() - Vec2::ONE) / 2.0
@@ -46,6 +54,10 @@ pub fn world_to_grid_pos(world_xy: Vec2, grid_size: GridSize) -> Option<GridPosi
 #[require(Transform, Visibility)]
 pub struct GridVisualRoot;
 
+/// Marker component for the single background quad rendering the water cells and darker cell borders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
+pub struct GridBackground;
+
 /// Resource storing the [`Entity`] of [`GridVisualRoot`] for fast `O(1)` parenting in observers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource)]
 pub struct GridRootEntity(pub Entity);
@@ -71,6 +83,22 @@ pub struct PaletteSwapMaterial {
 impl MaterialExtension2d for PaletteSwapMaterial {
     fn fragment_shader() -> Option<bevy::shader::ShaderRef> {
         Some("shaders/palette_swap.wesl".into())
+    }
+}
+
+#[derive(Debug, Clone, Asset, AsBindGroup, Reflect)]
+pub struct GridBackgroundMaterial {
+    #[uniform(100)]
+    pub cell_color: LinearRgba,
+    #[uniform(101)]
+    pub border_color: LinearRgba,
+    #[uniform(102)]
+    pub grid_size: Vec2,
+}
+
+impl MaterialExtension2d for GridBackgroundMaterial {
+    fn fragment_shader() -> Option<bevy::shader::ShaderRef> {
+        Some("shaders/grid_background.wesl".into())
     }
 }
 
@@ -129,7 +157,7 @@ impl HasDedicatedZ for Predator {
 }
 
 const _: () = {
-    assert!(Plant::Z < Herbivore::Z && Herbivore::Z < Predator::Z);
+    assert!(GRID_BACKGROUND_Z < Plant::Z && Plant::Z < Herbivore::Z && Herbivore::Z < Predator::Z);
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component)]
@@ -147,43 +175,46 @@ pub struct SpritesPlugin;
 
 impl Plugin for SpritesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(SpriteMaterialPlugin::<PaletteSwapMaterial>::default())
-            .add_systems(PreStartup, setup_visual_root_and_sprites)
-            .add_observer(attach_visuals_to_plant)
-            .add_observer(attach_visuals_to_character::<Herbivore>)
-            .add_observer(attach_visuals_to_character::<Predator>)
-            .add_observer(on_world_seeded)
-            .add_systems(
-                SimulationTick,
-                (
-                    remember_previous_pose.before(SimulationSystems::Step),
-                    reset_step_transition,
-                )
+        app.add_plugins((
+            SpriteMaterialPlugin::<PaletteSwapMaterial>::default(),
+            SpriteMaterialPlugin::<GridBackgroundMaterial>::default(),
+        ))
+        .add_systems(PreStartup, setup_visual_root_and_sprites)
+        .add_observer(attach_visuals_to_plant)
+        .add_observer(attach_visuals_to_character::<Herbivore>)
+        .add_observer(attach_visuals_to_character::<Predator>)
+        .add_observer(on_world_seeded)
+        .add_systems(
+            SimulationTick,
+            (
+                remember_previous_pose.before(SimulationSystems::Step),
+                reset_step_transition,
+            )
+                .run_if(resource_equals(SimulationSpeedMode::FixedStep)),
+        )
+        .add_systems(
+            Update,
+            (
+                update_step_transition.run_if(resource_equals(SimulationSpeedMode::FixedStep)),
+                set_step_transitioned.run_if(resource_equals(SimulationSpeedMode::Uncapped)),
+            )
+                .run_if(|it: Res<StepTransition>| it.progress < 1.0),
+        )
+        .add_systems(
+            PostUpdate,
+            (
+                sync_grid_root_centering.run_if(resource_changed::<GridSize>),
+                sync_translation_with_grid::<With<Plant>>
                     .run_if(resource_equals(SimulationSpeedMode::FixedStep)),
-            )
-            .add_systems(
-                Update,
-                (
-                    update_step_transition.run_if(resource_equals(SimulationSpeedMode::FixedStep)),
-                    set_step_transitioned.run_if(resource_equals(SimulationSpeedMode::Uncapped)),
-                )
-                    .run_if(|it: Res<StepTransition>| it.progress < 1.0),
-            )
-            .add_systems(
-                PostUpdate,
-                (
-                    sync_grid_root_centering.run_if(resource_changed::<GridSize>),
-                    sync_translation_with_grid::<With<Plant>>
-                        .run_if(resource_equals(SimulationSpeedMode::FixedStep)),
-                    interpolate_character_transform.run_if(resource_changed::<StepTransition>),
-                    (sync_translation_with_grid::<()>, sync_rotation_with_grid)
-                        .chain_weak()
-                        .run_if(resource_equals(SimulationSpeedMode::Uncapped)),
-                )
+                interpolate_character_transform.run_if(resource_changed::<StepTransition>),
+                (sync_translation_with_grid::<()>, sync_rotation_with_grid)
                     .chain_weak()
-                    .before(TransformSystems::Propagate),
+                    .run_if(resource_equals(SimulationSpeedMode::Uncapped)),
             )
-            .init_resource::<StepTransition>();
+                .chain_weak()
+                .before(TransformSystems::Propagate),
+        )
+        .init_resource::<StepTransition>();
     }
 }
 
@@ -192,6 +223,7 @@ fn setup_visual_root_and_sprites(
     field_size: Res<GridSize>,
     asset_server: Res<AssetServer>,
     mut shaders: ResMut<Assets<PaletteSwapMaterial>>,
+    mut bg_materials: ResMut<Assets<GridBackgroundMaterial>>,
 ) {
     let root = commands
         .spawn((
@@ -201,6 +233,22 @@ fn setup_visual_root_and_sprites(
         .id();
 
     commands.insert_resource(GridRootEntity(root));
+
+    let bg_material = bg_materials.add(GridBackgroundMaterial {
+        cell_color: LinearRgba::from(WATER_CELL_COLOR),
+        border_color: LinearRgba::from(WATER_DARK_COLOR),
+        grid_size: field_size.as_vec2(),
+    });
+
+    commands.spawn((
+        GridBackground,
+        Sprite {
+            custom_size: Some(field_size.as_vec2() * TILE_SIZE),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, GRID_BACKGROUND_Z),
+        SpriteMaterial(bg_material),
+    ));
 
     commands.insert_resource(OrganismSprites {
         plant: asset_server.load("sprites/algae.png"),
@@ -317,8 +365,16 @@ fn update_step_transition(
 fn sync_grid_root_centering(
     field_size: Res<GridSize>,
     mut root_transform: Single<&mut Transform, With<GridVisualRoot>>,
+    bg_query: Single<(&mut Sprite, &SpriteMaterial<GridBackgroundMaterial>), With<GridBackground>>,
+    mut bg_materials: ResMut<Assets<GridBackgroundMaterial>>,
 ) {
     root_transform.translation = grid_origin_offset(*field_size).extend(0.0);
+
+    let (mut bg_sprite, bg_mat_handle) = bg_query.into_inner();
+    bg_sprite.custom_size = Some(field_size.as_vec2() * TILE_SIZE);
+    if let Some(mut mat) = bg_materials.get_mut(&bg_mat_handle.0) {
+        mat.grid_size = field_size.as_vec2();
+    }
 }
 
 fn sync_translation_with_grid<F: QueryFilter>(

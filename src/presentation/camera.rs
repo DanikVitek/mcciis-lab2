@@ -3,13 +3,19 @@ use bevy::{
     input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel},
     window::PrimaryWindow,
 };
+use bevy_egui::input::{EguiWantsInput, egui_wants_any_pointer_input};
 
-use crate::grid::GridSize;
+use crate::{
+    grid::GridSize,
+    simulation::organism::{Herbivore, Predator},
+};
 
-use super::sprites::TILE_SIZE;
+use super::{
+    sprites::{TILE_SIZE, WATER_DARK_COLOR, grid_origin_offset},
+    ui::inspector::InspectedCharacter,
+};
 
-/// Dark-grassy green (#337c37)
-const BACKGROUND_COLOR: Color = Color::oklch(0.5221, 0.1258, 144.53);
+const BACKGROUND_COLOR: Color = WATER_DARK_COLOR;
 
 const ZOOM_SCALE_MIN: f32 = 0.1;
 
@@ -21,12 +27,21 @@ pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_camera).add_systems(
-            Update,
-            (zoom_camera_to_cursor, pan_camera_on_drag)
-                .chain_weak()
-                .in_set(CameraSystems),
-        );
+        app.add_systems(Startup, setup_camera)
+            .add_systems(
+                Update,
+                (zoom_camera_to_cursor, pan_camera_on_drag)
+                    .chain_weak()
+                    .in_set(CameraSystems)
+                    .run_if(
+                        resource_exists::<EguiWantsInput>
+                            .and_then(not(egui_wants_any_pointer_input)),
+                    ),
+            )
+            .add_systems(
+                PostUpdate,
+                follow_inspected_character.before(TransformSystems::Propagate),
+            );
     }
 }
 
@@ -51,6 +66,7 @@ fn zoom_camera_to_cursor(
         With<Camera2d>,
     >,
     field_size: Res<GridSize>,
+    inspected: Option<Res<InspectedCharacter>>,
 ) {
     let mut scroll_delta = 0.0;
     for msg in mouse_wheel.read() {
@@ -78,9 +94,11 @@ fn zoom_camera_to_cursor(
         return;
     }
 
-    // 1. Shift camera toward cursor if the cursor is inside the window
+    // 1. Shift camera toward cursor if not following a character and the cursor is inside the window
     let scale_ratio = new_scale / old_scale;
-    if let Some(cursor_screen_pos) = window.cursor_position()
+    let is_following = inspected.is_some_and(|i| i.0.is_some());
+    if !is_following
+        && let Some(cursor_screen_pos) = window.cursor_position()
         && let Ok(cursor_world_pos) = camera.viewport_to_world_2d(camera_global, cursor_screen_pos)
     {
         let camera_xy = camera_transform.translation.truncate();
@@ -103,7 +121,12 @@ fn pan_camera_on_drag(
     mouse_motion: Res<AccumulatedMouseMotion>,
     camera_query: Single<(&Camera, &Projection, &mut Transform), With<Camera2d>>,
     field_size: Res<GridSize>,
+    inspected: Option<Res<InspectedCharacter>>,
 ) {
+    if inspected.is_some_and(|i| i.0.is_some()) {
+        return;
+    }
+
     // Pan while holding Left or Middle mouse button
     let is_dragging =
         mouse_buttons.pressed(MouseButton::Left) || mouse_buttons.pressed(MouseButton::Middle);
@@ -127,6 +150,34 @@ fn pan_camera_on_drag(
     // Screen +Y is down, World +Y is up; dragging the mouse right/down moves the camera left/up:
     camera_transform.translation.x -= mouse_motion.delta.x * world_units_per_px.x;
     camera_transform.translation.y += mouse_motion.delta.y * world_units_per_px.y;
+
+    clamp_camera_to_grid(&mut camera_transform, projection.area.size(), &field_size);
+}
+
+type CharacterTransformFilter = (Or<(With<Herbivore>, With<Predator>)>, Without<Camera2d>);
+
+fn follow_inspected_character(
+    inspected: Option<Res<InspectedCharacter>>,
+    characters: Query<&Transform, CharacterTransformFilter>,
+    camera_query: Single<(&Projection, &mut Transform), With<Camera2d>>,
+    field_size: Res<GridSize>,
+) {
+    let Some(entity) = inspected.and_then(|i| i.0) else {
+        return;
+    };
+    let Ok(character_transform) = characters.get(entity) else {
+        return;
+    };
+
+    let (projection, mut camera_transform) = camera_query.into_inner();
+    let Projection::Orthographic(ref projection) = *projection else {
+        return;
+    };
+
+    let target_world_xy =
+        grid_origin_offset(*field_size) + character_transform.translation.truncate();
+    camera_transform.translation.x = target_world_xy.x;
+    camera_transform.translation.y = target_world_xy.y;
 
     clamp_camera_to_grid(&mut camera_transform, projection.area.size(), &field_size);
 }
