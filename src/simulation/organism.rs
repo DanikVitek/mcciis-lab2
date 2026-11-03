@@ -4,6 +4,9 @@ use bevy::prelude::*;
 
 use super::brain::Brain;
 
+/// Query filter matching any living character organism ([`Herbivore`] or [`Predator`]).
+pub type CharacterFilter = Or<(With<Herbivore>, With<Predator>)>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
 #[require(ValueAsFood(1))]
 pub struct Plant;

@@ -7,6 +7,8 @@ use bevy_egui::{
     EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui, input::egui_wants_any_keyboard_input,
 };
 
+use crate::simulation::organism::CharacterFilter;
+
 use self::{
     config::{SimConfigUiPlugin, toggle_playback_pause, trigger_single_step},
     inspector::{BrainInspectorUiPlugin, InspectedCharacter},
@@ -23,7 +25,7 @@ pub const VIEWPORT_MARGIN: f32 = 16.0;
 pub struct HistoryPlotOpen(pub bool);
 
 /// System sets for UI update logic (`Update`).
-#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
 pub enum UiSystems {
     Config,
     Inspector,
@@ -62,13 +64,17 @@ fn handle_ui_hotkeys(
     mut next_playback_state: ResMut<NextState<SimulationPlaybackState>>,
     mut plot_open: ResMut<HistoryPlotOpen>,
     mut inspected: ResMut<InspectedCharacter>,
+    organisms: Query<(), CharacterFilter>,
     mut commands: Commands,
 ) {
-    if keys.just_pressed(KeyCode::Space) {
+    let has_organisms = !organisms.is_empty();
+
+    if has_organisms && keys.just_pressed(KeyCode::Space) {
         toggle_playback_pause(&playback_state, &mut next_playback_state);
     }
 
-    if *playback_state.get() == SimulationPlaybackState::Paused
+    if has_organisms
+        && *playback_state.get() == SimulationPlaybackState::Paused
         && (keys.just_pressed(KeyCode::KeyS) || keys.just_pressed(KeyCode::ArrowRight))
     {
         trigger_single_step(&mut commands);

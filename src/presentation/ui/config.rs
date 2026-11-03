@@ -138,6 +138,8 @@ fn render_config_ui(
                 .inner_margin(12.0),
         )
         .show(ctx, |ui| {
+            let totals = spatial_grid.total_counts();
+            let has_organisms = totals.herbivores > 0 || totals.predators > 0;
             let is_paused = *playback_state.get() == SimulationPlaybackState::Paused;
 
             // --- 1. Playback & Pacing ---
@@ -154,17 +156,28 @@ fn render_config_ui(
                 } else {
                     "⏸ Pause (Space)"
                 };
-                if ui.button(pause_label).clicked() {
+                if ui
+                    .add_enabled(has_organisms, egui::Button::new(pause_label))
+                    .clicked()
+                {
                     toggle_playback_pause(&playback_state, &mut next_playback_state);
                 }
 
                 if ui
-                    .add_enabled(is_paused, egui::Button::new("⏭ Step (S)"))
+                    .add_enabled(is_paused && has_organisms, egui::Button::new("⏭ Step (S)"))
                     .clicked()
                 {
                     trigger_single_step(&mut commands);
                 }
             });
+
+            if !has_organisms {
+                ui.add_space(2.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(245, 165, 95),
+                    egui::RichText::new("No organisms left — reset world to continue.").small(),
+                );
+            }
 
             ui.add_space(6.0);
 
@@ -223,7 +236,6 @@ fn render_config_ui(
             );
             ui.add_space(4.0);
 
-            let totals = spatial_grid.total_counts();
             egui::Grid::new("telemetry_grid")
                 .num_columns(2)
                 .spacing([16.0, 4.0])

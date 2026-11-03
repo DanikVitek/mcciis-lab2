@@ -12,7 +12,7 @@ use crate::{
             Action, Brain, BrainInputs, BrainOutputs, INPUTS, OUTPUTS, SensorOffsets,
             sense_brain_inputs,
         },
-        organism::{Age, Energy, EntityKind, Generation, Herbivore, Predator},
+        organism::{Age, Energy, EntityKind, Generation, Herbivore, Predator, ValueAsFood},
         spatial::SpatialGrid,
     },
 };
@@ -34,6 +34,7 @@ pub struct CharacterBrainSnapshot<'a> {
     pub facing: Facing,
     pub age: Age,
     pub energy: Energy,
+    pub value_as_food: Option<ValueAsFood>,
     pub generation: Generation,
     pub brain: &'a Brain,
     pub sensors: &'a SensorOffsets,
@@ -56,6 +57,7 @@ pub struct CharacterInspector<'w, 's> {
             &'static Facing,
             &'static Age,
             &'static Energy,
+            Option<&'static ValueAsFood>,
             &'static Generation,
             &'static Brain,
             &'static SensorOffsets,
@@ -84,8 +86,17 @@ impl<'w, 's> CharacterInspector<'w, 's> {
     /// Computes a full [`CharacterBrainSnapshot`] for the currently selected character, if any.
     pub fn snapshot(&self) -> Option<CharacterBrainSnapshot<'_>> {
         let entity = self.inspected.0?;
-        let (&position, &facing, &age, &energy, &generation, brain, sensors, is_herbivore) =
-            self.characters.get(entity).ok()?;
+        let (
+            &position,
+            &facing,
+            &age,
+            &energy,
+            value_as_food,
+            &generation,
+            brain,
+            sensors,
+            is_herbivore,
+        ) = self.characters.get(entity).ok()?;
 
         let kind = if is_herbivore {
             EntityKind::Herbivore
@@ -103,6 +114,7 @@ impl<'w, 's> CharacterInspector<'w, 's> {
             facing,
             age,
             energy,
+            value_as_food: value_as_food.copied(),
             generation,
             brain,
             sensors,
@@ -306,6 +318,9 @@ fn render_pov_panel_contents(
         ui.spacing_mut().item_spacing.x = 10.0;
         ui.label(egui::RichText::new(format!("Gen {}", snapshot.generation.number())).monospace());
         ui.label(egui::RichText::new(format!("Age {}", snapshot.age.ticks())).monospace());
+        if let Some(food) = snapshot.value_as_food {
+            ui.label(egui::RichText::new(format!("Food Val {}", food.0)).monospace());
+        }
         ui.label(
             egui::RichText::new(format!(
                 "Pos ({}, {}) {:?}",
@@ -325,7 +340,6 @@ fn render_pov_panel_contents(
                 "Energy: {} / {} (-1/tick, repro ≥ {})",
                 energy_cur,
                 Energy::MAX.current(),
-                // snapshot.metabolism.per_tick(),
                 Energy::REPRODUCTION_THRESHOLD
             )),
     );

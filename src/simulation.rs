@@ -12,8 +12,14 @@ use bevy::prelude::*;
 use crate::grid::GridSize;
 
 pub use self::history::{HistoryRecorderPlugin, HistorySample, SampleRate, SimulationHistory};
+use self::organism::CharacterFilter;
 pub use self::seed::{DistributionConfig, DistributionError};
 use self::spatial::SpatialGrid;
+
+/// Run condition returning `true` while at least one character organism (`Herbivore` or `Predator`) is alive.
+pub fn has_living_organisms(organisms: Query<(), CharacterFilter>) -> bool {
+    !organisms.is_empty()
+}
 
 /// Custom schedule executing one discrete tick of the simulation.
 ///
@@ -105,7 +111,14 @@ fn advance_tick_counter(mut ticks: ResMut<SimulationTickCount>) {
     ticks.0 += 1;
 }
 
-fn on_step_simulation_once(_step: On<StepSimulationOnce>, mut commands: Commands) {
+fn on_step_simulation_once(
+    _step: On<StepSimulationOnce>,
+    organisms: Query<(), CharacterFilter>,
+    mut commands: Commands,
+) {
+    if organisms.is_empty() {
+        return;
+    }
     commands.queue(|world: &mut World| {
         world.run_schedule(SimulationTick);
     });
@@ -114,7 +127,7 @@ fn on_step_simulation_once(_step: On<StepSimulationOnce>, mut commands: Commands
 /// Optional uncapped runner plugin for headless `App::run()` executions (e.g. with `MinimalPlugins`).
 ///
 /// Runs [`SimulationTick`] every `Update` cycle without any `FixedUpdate` sleep/timer delay,
-/// optionally exiting after `max_ticks`.
+/// exiting automatically when all organisms die out or when `max_ticks` is reached.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HeadlessRunnerPlugin {
     pub max_ticks: Option<u64>,
@@ -138,6 +151,14 @@ impl Plugin for HeadlessRunnerPlugin {
         app.add_systems(Update, move |world: &mut World| {
             if let Some(limit) = max_ticks
                 && world.resource::<SimulationTickCount>().0 >= limit
+            {
+                world.write_message(AppExit::Success);
+                return;
+            }
+            if world
+                .resource::<SpatialGrid>()
+                .character_counts()
+                .is_empty()
             {
                 world.write_message(AppExit::Success);
                 return;

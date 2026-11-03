@@ -45,7 +45,7 @@
 private = true
 condition = { profiles = ["development"] }
 command = "cargo"
-args = ["run", "--features", "dev"]
+args = ["run", "-F", "dev"]
 # dependencies = ["clean"]
 
 [tasks.run-prod]
@@ -57,3 +57,19 @@ args = ["run", "--release"]
 
 [tasks.run]
 dependencies = ["run-dev", "run-prod"]
+
+[tasks.test-dev]
+private = true
+condition = { profiles = ["development"] }
+command = "cargo"
+args = ["test", "-F", "dev", "${@}"]
+
+[tasks.test-prod]
+private = true
+condition = { profiles = ["production"] }
+command = "cargo"
+args = ["test", "--release", "${@}"]
+
+[tasks.test]
+clear = true
+dependencies = ["test-dev", "test-prod"]

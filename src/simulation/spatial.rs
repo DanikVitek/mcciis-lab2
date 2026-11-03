@@ -16,6 +16,16 @@ pub struct CharacterCounts {
     pub predators: u32,
 }
 
+impl CharacterCounts {
+    pub const fn total(&self) -> u32 {
+        self.herbivores + self.predators
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.herbivores == 0 && self.predators == 0
+    }
+}
+
 impl<T> From<CellCounts<T>> for CharacterCounts
 where
     u32: From<T>,

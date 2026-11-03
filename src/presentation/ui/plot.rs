@@ -70,7 +70,7 @@ fn render_history_plot_ui(
                 .inner_margin(16.0),
         )
         .show(ctx, |ui| {
-            let totals = spatial_grid.total_counts();
+            let totals = spatial_grid.character_counts();
 
             ui.horizontal(|ui| {
                 ui.heading(
@@ -87,10 +87,6 @@ fn render_history_plot_ui(
                         .monospace(),
                 );
                 ui.separator();
-                ui.colored_label(
-                    egui::Color32::from_rgb(90, 220, 120),
-                    format!("Algae: {}", totals.plants),
-                );
                 ui.colored_label(
                     egui::Color32::from_rgb(240, 215, 70),
                     format!("Herbivores: {}", totals.herbivores),
@@ -142,7 +138,6 @@ fn render_history_plot_ui(
             let counts = history.counts_history();
             let last_tick = history.last_tick();
 
-            // let plant_points = build_series_points(ticks, counts.plants, last_tick);
             let herbivore_points = build_series_points(ticks, counts.herbivores, last_tick);
             let predator_points = build_series_points(ticks, counts.predators, last_tick);
 
@@ -153,11 +148,6 @@ fn render_history_plot_ui(
                 .include_y(0.0)
                 .allow_scroll(false)
                 .show(ui, |plot_ui| {
-                    // plot_ui.line(
-                    //     Line::new("Algae (Plants)", plant_points)
-                    //         .color(egui::Color32::from_rgb(90, 220, 120))
-                    //         .width(2.0),
-                    // );
                     plot_ui.line(
                         Line::new("Herbivores", herbivore_points)
                             .color(egui::Color32::from_rgb(240, 215, 70))

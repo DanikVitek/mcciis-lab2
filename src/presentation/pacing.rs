@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
-use crate::simulation::SimulationTick;
+use crate::simulation::{SimulationTick, has_living_organisms};
 
 /// Visual playback state controlling whether [`SimulationTick`] advances automatically.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, States)]
@@ -50,17 +50,27 @@ impl Plugin for SimulationPacingPlugin {
                 FixedUpdate,
                 run_simulation_tick
                     .run_if(in_state(SimulationPlaybackState::Running))
-                    .run_if(resource_equals(SimulationSpeedMode::FixedStep)),
+                    .run_if(resource_equals(SimulationSpeedMode::FixedStep))
+                    .run_if(has_living_organisms),
             )
             .add_systems(
                 Update,
-                run_simulation_tick
-                    .run_if(in_state(SimulationPlaybackState::Running))
-                    .run_if(resource_equals(SimulationSpeedMode::Uncapped)),
+                (
+                    run_simulation_tick
+                        .run_if(resource_equals(SimulationSpeedMode::Uncapped))
+                        .run_if(has_living_organisms),
+                    pause_when_no_organisms.run_if(not(has_living_organisms)),
+                )
+                    .chain_weak()
+                    .run_if(in_state(SimulationPlaybackState::Running)),
             );
     }
 }
 
 fn run_simulation_tick(world: &mut World) {
     world.run_schedule(SimulationTick);
+}
+
+fn pause_when_no_organisms(mut next_state: ResMut<NextState<SimulationPlaybackState>>) {
+    next_state.set(SimulationPlaybackState::Paused);
 }
