@@ -5,13 +5,14 @@ use bevy::prelude::*;
 use super::brain::Brain;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
+#[require(ValueAsFood(1))]
 pub struct Plant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
 #[require(
     Age,
     Energy,
-    MetabolismRate(2),
+    ValueAsFood(2),
     Generation,
     Brain = rand::random::<Brain>(),
 )]
@@ -21,7 +22,6 @@ pub struct Herbivore;
 #[require(
     Age,
     Energy,
-    MetabolismRate(1),
     Generation,
     Brain = rand::random::<Brain>(),
 )]
@@ -90,12 +90,12 @@ impl Energy {
         self.0
     }
 
-    pub fn increment(&mut self) {
-        self.0 = Self::MAX.0.min(self.0 + 1);
+    pub fn increment(&mut self, ValueAsFood(value): ValueAsFood) {
+        self.0 = Self::MAX.0.min(self.0 + value);
     }
 
-    pub fn decrement(&mut self, rate: MetabolismRate) -> DecrementResult<()> {
-        self.0 = self.0.saturating_sub(rate.0);
+    pub fn decrement(&mut self) -> DecrementResult<()> {
+        self.0 = self.0.saturating_sub(1);
 
         DecrementResult {
             value: (),
@@ -120,9 +120,9 @@ impl Energy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
-pub struct MetabolismRate(pub u8);
+pub struct ValueAsFood(pub u8);
 
-impl MetabolismRate {
+impl ValueAsFood {
     pub const fn per_tick(self) -> u8 {
         self.0
     }

@@ -7,7 +7,7 @@ use crate::grid::{Facing, GridPosition, GridSize};
 
 use super::{
     brain::{Action, Brain, SensorOffsets, sense_brain_inputs},
-    organism::{Age, Energy, EntityKind, Generation, Herbivore, MetabolismRate, Plant, Predator},
+    organism::{Age, Energy, EntityKind, Generation, Herbivore, Plant, Predator, ValueAsFood},
     spatial::SpatialGrid,
 };
 
@@ -25,26 +25,17 @@ pub(super) fn step_organisms(
             &mut Age,
             &Brain,
             &SensorOffsets,
-            &MetabolismRate,
             Has<Herbivore>,
         ),
         Without<Plant>,
     >,
+    food: Query<&ValueAsFood, Without<Predator>>,
     mut plant_positions: Query<&mut GridPosition, With<Plant>>,
 ) {
     let mut consumed_herbivores = EntityHashSet::new();
 
-    for (
-        entity,
-        mut pos,
-        mut facing,
-        mut energy,
-        mut age,
-        brain,
-        sensors,
-        metabolism,
-        is_herbivore,
-    ) in characters
+    for (entity, mut pos, mut facing, mut energy, mut age, brain, sensors, is_herbivore) in
+        characters
     {
         let self_kind = if is_herbivore {
             if consumed_herbivores.contains(&entity) {
@@ -59,7 +50,7 @@ pub(super) fn step_organisms(
 
         match brain.act_on(inputs) {
             Action::TurnLeft => {
-                if energy.decrement(*metabolism).is_deceased() {
+                if energy.decrement().is_deceased() {
                     spatial_grid.remove(*pos, entity, self_kind);
                     commands.entity(entity).despawn();
                 } else {
@@ -68,7 +59,7 @@ pub(super) fn step_organisms(
                 }
             }
             Action::TurnRight => {
-                if energy.decrement(*metabolism).is_deceased() {
+                if energy.decrement().is_deceased() {
                     spatial_grid.remove(*pos, entity, self_kind);
                     commands.entity(entity).despawn();
                 } else {
@@ -77,7 +68,7 @@ pub(super) fn step_organisms(
                 }
             }
             Action::GoForward => {
-                if energy.decrement(*metabolism).is_deceased() {
+                if energy.decrement().is_deceased() {
                     spatial_grid.remove(*pos, entity, self_kind);
                     commands.entity(entity).despawn();
                 } else {
@@ -113,8 +104,9 @@ pub(super) fn step_organisms(
                         consumed_herbivores.insert(target_entity);
                     }
 
-                    energy.increment();
-                } else if energy.decrement(*metabolism).is_deceased() {
+                    let value = food.get(target_entity).unwrap();
+                    energy.increment(*value);
+                } else if energy.decrement().is_deceased() {
                     spatial_grid.remove(*pos, entity, self_kind);
                     commands.entity(entity).despawn();
                     continue;

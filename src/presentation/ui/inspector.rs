@@ -12,7 +12,7 @@ use crate::{
             Action, Brain, BrainInputs, BrainOutputs, INPUTS, OUTPUTS, SensorOffsets,
             sense_brain_inputs,
         },
-        organism::{Age, Energy, EntityKind, Generation, Herbivore, MetabolismRate, Predator},
+        organism::{Age, Energy, EntityKind, Generation, Herbivore, Predator},
         spatial::SpatialGrid,
     },
 };
@@ -34,7 +34,6 @@ pub struct CharacterBrainSnapshot<'a> {
     pub facing: Facing,
     pub age: Age,
     pub energy: Energy,
-    pub metabolism: MetabolismRate,
     pub generation: Generation,
     pub brain: &'a Brain,
     pub sensors: &'a SensorOffsets,
@@ -57,7 +56,6 @@ pub struct CharacterInspector<'w, 's> {
             &'static Facing,
             &'static Age,
             &'static Energy,
-            &'static MetabolismRate,
             &'static Generation,
             &'static Brain,
             &'static SensorOffsets,
@@ -86,17 +84,8 @@ impl<'w, 's> CharacterInspector<'w, 's> {
     /// Computes a full [`CharacterBrainSnapshot`] for the currently selected character, if any.
     pub fn snapshot(&self) -> Option<CharacterBrainSnapshot<'_>> {
         let entity = self.inspected.0?;
-        let (
-            &position,
-            &facing,
-            &age,
-            &energy,
-            &metabolism,
-            &generation,
-            brain,
-            sensors,
-            is_herbivore,
-        ) = self.characters.get(entity).ok()?;
+        let (&position, &facing, &age, &energy, &generation, brain, sensors, is_herbivore) =
+            self.characters.get(entity).ok()?;
 
         let kind = if is_herbivore {
             EntityKind::Herbivore
@@ -114,7 +103,6 @@ impl<'w, 's> CharacterInspector<'w, 's> {
             facing,
             age,
             energy,
-            metabolism,
             generation,
             brain,
             sensors,
@@ -334,10 +322,10 @@ fn render_pov_panel_contents(
         egui::ProgressBar::new(energy_frac)
             .fill(egui::Color32::from_rgb(55, 165, 225))
             .text(format!(
-                "Energy: {} / {} (-{}/tick, repro ≥ {})",
+                "Energy: {} / {} (-1/tick, repro ≥ {})",
                 energy_cur,
                 Energy::MAX.current(),
-                snapshot.metabolism.per_tick(),
+                // snapshot.metabolism.per_tick(),
                 Energy::REPRODUCTION_THRESHOLD
             )),
     );
