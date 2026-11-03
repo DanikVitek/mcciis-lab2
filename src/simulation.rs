@@ -11,13 +11,13 @@ use bevy::prelude::*;
 
 use crate::grid::GridSize;
 
-pub use self::history::{HistoryRecorderPlugin, HistorySample, SampleRate, SimulationHistory};
+pub use self::brain::{DistributedMutation, Mutation, MutationStrategy, SingleNeuronMutation};
+pub use self::history::{
+    GenerationSample, HistoryRecorderPlugin, HistorySample, SampleRate, SimulationHistory,
+};
+use self::organism::CharacterFilter;
 pub use self::seed::{DistributionConfig, DistributionError};
 use self::spatial::SpatialGrid;
-use self::{
-    brain::{DistributedMutation, MutationStrategy},
-    organism::CharacterFilter,
-};
 
 /// Run condition returning `true` while at least one character organism (`Herbivore` or `Predator`) is alive.
 pub fn has_living_organisms(organisms: Query<(), CharacterFilter>) -> bool {
@@ -67,14 +67,22 @@ pub struct StepSimulationOnce;
 pub struct SimulationPlugin {
     pub grid_size: GridSize,
     pub distribution: DistributionConfig,
+    pub mutation_strategy: MutationStrategy,
 }
 
 impl SimulationPlugin {
-    pub const fn new(grid_size: GridSize, distribution: DistributionConfig) -> Self {
+    pub fn new(grid_size: GridSize, distribution: DistributionConfig) -> Self {
         Self {
             grid_size,
             distribution,
+            mutation_strategy: MutationStrategy::default(),
         }
+    }
+
+    #[inline]
+    pub fn with_mutation(mut self, strategy: impl Into<MutationStrategy>) -> Self {
+        self.mutation_strategy = strategy.into();
+        self
     }
 }
 
@@ -83,7 +91,7 @@ impl Plugin for SimulationPlugin {
         app.insert_resource(self.grid_size)
             .insert_resource(self.distribution)
             .insert_resource(SpatialGrid::new(self.grid_size))
-            .insert_resource(MutationStrategy::new(DistributedMutation::new(0.5)))
+            .insert_resource(self.mutation_strategy)
             .init_resource::<SimulationTickCount>()
             .init_schedule(SimulationTick)
             .configure_sets(

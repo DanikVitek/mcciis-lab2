@@ -8,8 +8,9 @@ use crate::{
     grid::GridSize,
     presentation::pacing::{SimulationPlaybackState, SimulationSpeedMode},
     simulation::{
-        DistributionConfig, DistributionError, ResetSimulation, SimulationTickCount,
-        StepSimulationOnce, history::SampleRate, spatial::SpatialGrid,
+        DistributedMutation, DistributionConfig, DistributionError, MutationStrategy,
+        ResetSimulation, SimulationTickCount, SingleNeuronMutation, StepSimulationOnce,
+        history::SampleRate, spatial::SpatialGrid,
     },
 };
 
@@ -17,21 +18,23 @@ use super::{HistoryPlotOpen, VIEWPORT_MARGIN};
 
 /// Staged form state edited by the configuration UI before applying changes to live resources.
 #[derive(Debug, Clone, Copy, PartialEq, Resource)]
-pub struct SimConfigDraft {
+pub struct SimConfig {
     pub grid_size: GridSize,
     pub plants_fraction: f32,
     pub herbivores_fraction: f32,
     pub predators_fraction: f32,
     pub tick_interval: Duration,
     pub speed_mode: SimulationSpeedMode,
+    pub mutation: MutationStrategy,
 }
 
-impl FromWorld for SimConfigDraft {
+impl FromWorld for SimConfig {
     fn from_world(world: &mut World) -> Self {
         let grid_size = *world.resource::<GridSize>();
         let dist = *world.resource::<DistributionConfig>();
         let tick_interval = world.resource::<Time<Fixed>>().timestep();
         let speed_mode = *world.resource::<SimulationSpeedMode>();
+        let mutation = *world.resource::<MutationStrategy>();
 
         Self {
             grid_size,
@@ -40,11 +43,12 @@ impl FromWorld for SimConfigDraft {
             predators_fraction: dist.predators_fraction(),
             tick_interval,
             speed_mode,
+            mutation,
         }
     }
 }
 
-impl SimConfigDraft {
+impl SimConfig {
     /// Applies live playback pacing changes (`tick_interval` and `speed_mode`) without resetting the world.
     pub fn apply_pacing(&self, fixed_time: &mut Time<Fixed>, speed_mode: &mut SimulationSpeedMode) {
         fixed_time.set_timestep(self.tick_interval);
@@ -91,7 +95,7 @@ pub struct SimConfigUiPlugin;
 
 impl Plugin for SimConfigUiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SimConfigDraft>()
+        app.init_resource::<SimConfig>()
             .add_systems(EguiPrimaryContextPass, render_config_ui);
     }
 }
@@ -99,11 +103,12 @@ impl Plugin for SimConfigUiPlugin {
 #[allow(clippy::too_many_arguments)]
 fn render_config_ui(
     mut contexts: EguiContexts,
-    mut draft: ResMut<SimConfigDraft>,
+    mut config: ResMut<SimConfig>,
     playback_state: Res<State<SimulationPlaybackState>>,
     mut next_playback_state: ResMut<NextState<SimulationPlaybackState>>,
     mut fixed_time: ResMut<Time<Fixed>>,
     mut speed_mode: ResMut<SimulationSpeedMode>,
+    mut mutation_strategy: ResMut<MutationStrategy>,
     mut grid_size: ResMut<GridSize>,
     mut distribution: ResMut<DistributionConfig>,
     mut sample_rate: Option<ResMut<SampleRate>>,
@@ -186,7 +191,7 @@ fn render_config_ui(
                 ui.label("Speed Mode:");
                 if ui
                     .selectable_value(
-                        &mut draft.speed_mode,
+                        &mut config.speed_mode,
                         SimulationSpeedMode::FixedStep,
                         "Fixed Step",
                     )
@@ -196,7 +201,7 @@ fn render_config_ui(
                 }
                 if ui
                     .selectable_value(
-                        &mut draft.speed_mode,
+                        &mut config.speed_mode,
                         SimulationSpeedMode::Uncapped,
                         "Uncapped",
                     )
@@ -206,8 +211,8 @@ fn render_config_ui(
                 }
             });
 
-            if draft.speed_mode == SimulationSpeedMode::FixedStep {
-                let mut interval_ms = draft.tick_interval.as_secs_f64() * 1000.0;
+            if config.speed_mode == SimulationSpeedMode::FixedStep {
+                let mut interval_ms = config.tick_interval.as_secs_f64() * 1000.0;
                 if ui
                     .add(
                         egui::Slider::new(&mut interval_ms, 10.0..=2000.0)
@@ -216,19 +221,85 @@ fn render_config_ui(
                     )
                     .changed()
                 {
-                    draft.tick_interval = Duration::from_secs_f64(interval_ms / 1000.0);
+                    config.tick_interval = Duration::from_secs_f64(interval_ms / 1000.0);
                     pacing_changed = true;
                 }
             }
 
             if pacing_changed {
-                draft.apply_pacing(&mut fixed_time, &mut speed_mode);
+                config.apply_pacing(&mut fixed_time, &mut speed_mode);
             }
 
             ui.add_space(6.0);
             ui.separator();
 
-            // --- 2. Live Ecosystem Telemetry ---
+            // --- 2. Mutation Strategy ---
+            ui.label(
+                egui::RichText::new("Mutation Strategy")
+                    .color(egui::Color32::from_rgb(170, 215, 255))
+                    .strong(),
+            );
+            ui.add_space(4.0);
+
+            let mut mutation_changed = false;
+            let current_kind = match config.mutation {
+                MutationStrategy::SingleNeuron { .. } => "Single Neuron",
+                MutationStrategy::Distributed { .. } => "Distributed",
+            };
+
+            egui::ComboBox::from_label("Strategy")
+                .selected_text(current_kind)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(
+                            matches!(config.mutation, MutationStrategy::SingleNeuron { .. }),
+                            "Single Neuron",
+                        )
+                        .clicked()
+                        && !matches!(config.mutation, MutationStrategy::SingleNeuron { .. })
+                    {
+                        config.mutation = MutationStrategy::SingleNeuron(SingleNeuronMutation);
+                        mutation_changed = true;
+                    }
+
+                    if ui
+                        .selectable_label(
+                            matches!(config.mutation, MutationStrategy::Distributed { .. }),
+                            "Distributed",
+                        )
+                        .clicked()
+                        && !matches!(config.mutation, MutationStrategy::Distributed { .. })
+                    {
+                        config.mutation =
+                            MutationStrategy::Distributed(DistributedMutation::default());
+                        mutation_changed = true;
+                    }
+                });
+
+            if let MutationStrategy::Distributed(DistributedMutation { ref mut offset }) =
+                config.mutation
+            {
+                ui.add_space(2.0);
+                if ui
+                    .add(
+                        egui::Slider::new(offset, 0.01..=2.0)
+                            .text("Offset")
+                            .fixed_decimals(2),
+                    )
+                    .changed()
+                {
+                    mutation_changed = true;
+                }
+            }
+
+            if mutation_changed {
+                *mutation_strategy = config.mutation;
+            }
+
+            ui.add_space(6.0);
+            ui.separator();
+
+            // --- 3. Live Ecosystem Telemetry ---
             ui.label(
                 egui::RichText::new("Live Telemetry")
                     .color(egui::Color32::from_rgb(170, 215, 255))
@@ -290,7 +361,7 @@ fn render_config_ui(
             ui.add_space(6.0);
             ui.separator();
 
-            // --- 3. World & Seeding Configuration ---
+            // --- 4. World & Seeding Configuration ---
             ui.label(
                 egui::RichText::new("World & Seeding")
                     .color(egui::Color32::from_rgb(170, 215, 255))
@@ -300,8 +371,8 @@ fn render_config_ui(
 
             ui.horizontal(|ui| {
                 ui.label("Grid W × H:");
-                let mut w = draft.grid_size.width();
-                let mut h = draft.grid_size.height();
+                let mut w = config.grid_size.width();
+                let mut h = config.grid_size.height();
                 let w_changed = ui
                     .add(egui::DragValue::new(&mut w).range(10..=500).prefix("W: "))
                     .changed();
@@ -309,28 +380,28 @@ fn render_config_ui(
                     .add(egui::DragValue::new(&mut h).range(10..=500).prefix("H: "))
                     .changed();
                 if w_changed || h_changed {
-                    draft.grid_size = GridSize::new(w.max(10), h.max(10));
+                    config.grid_size = GridSize::new(w.max(10), h.max(10));
                 }
             });
 
             ui.add(
-                egui::Slider::new(&mut draft.plants_fraction, 0.0..=1.0)
+                egui::Slider::new(&mut config.plants_fraction, 0.0..=1.0)
                     .text("Algae")
                     .fixed_decimals(2),
             );
             ui.add(
-                egui::Slider::new(&mut draft.herbivores_fraction, 0.0..=1.0)
+                egui::Slider::new(&mut config.herbivores_fraction, 0.0..=1.0)
                     .text("Herbivores")
                     .fixed_decimals(2),
             );
             ui.add(
-                egui::Slider::new(&mut draft.predators_fraction, 0.0..=1.0)
+                egui::Slider::new(&mut config.predators_fraction, 0.0..=1.0)
                     .text("Predators")
                     .fixed_decimals(2),
             );
 
             let total_fraction =
-                draft.plants_fraction + draft.herbivores_fraction + draft.predators_fraction;
+                config.plants_fraction + config.herbivores_fraction + config.predators_fraction;
             let fractions_valid = total_fraction <= 1.0;
 
             if !fractions_valid {
@@ -346,7 +417,7 @@ fn render_config_ui(
                     egui::RichText::new(format!(
                         "Initial occupancy: {:.0}% of {} tiles",
                         total_fraction * 100.0,
-                        u32::from(draft.grid_size.width()) * u32::from(draft.grid_size.height())
+                        u32::from(config.grid_size.width()) * u32::from(config.grid_size.height())
                     ))
                     .small()
                     .color(egui::Color32::from_rgb(155, 180, 205)),
@@ -365,7 +436,7 @@ fn render_config_ui(
                 .clicked()
             {
                 let _ =
-                    draft.apply_world_and_reset(&mut commands, &mut grid_size, &mut distribution);
+                    config.apply_world_and_reset(&mut commands, &mut grid_size, &mut distribution);
             }
         });
 

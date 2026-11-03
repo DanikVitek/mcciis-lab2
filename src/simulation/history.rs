@@ -1,18 +1,31 @@
 use core::{iter::FusedIterator, num::NonZeroU64, slice};
+use std::collections::BTreeMap;
 
 use bevy::prelude::*;
 
 use super::{
     SimulationSystems, SimulationTick, SimulationTickCount, WorldSeeded,
+    organism::{CharacterFilter, Generation},
     spatial::{CellCounts, SpatialGrid},
 };
 
+/// Generation statistics at a discrete sample tick.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct GenerationSample {
+    /// Earliest generation still surviving among living organisms (`None` if extinct).
+    pub oldest_alive: Option<u32>,
+    /// Highest (most recent) generation among living organisms (`None` if extinct).
+    pub youngest: Option<u32>,
+    /// Distribution of living individuals per generation: `(generation_number, count)`.
+    pub counts: Vec<(u32, u32)>,
+}
+
 /// Single recorded sample of population and evolutionary statistics at a discrete `tick`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HistorySample {
     pub tick: u64,
     pub counts: CellCounts<u32>,
-    // TODO(history): Add evolutionary metrics (e.g. mean/max `Generation`, `Age`, `Energy` per species).
+    pub generation: GenerationSample,
 }
 
 /// Time-series log of [`HistorySample`]s across the current simulation run (stored in SoA form).
@@ -24,6 +37,7 @@ pub struct SimulationHistory {
     last_tick: Option<u64>,
     tick: Vec<u64>,
     counts: CellCounts<Vec<u32>>,
+    generations: Vec<GenerationSample>,
 }
 
 impl SimulationHistory {
@@ -33,6 +47,10 @@ impl SimulationHistory {
 
     pub fn counts_history(&self) -> CellCounts<&[u32]> {
         self.counts.as_ref().map(Vec::as_slice)
+    }
+
+    pub fn generation_history(&self) -> &[GenerationSample] {
+        &self.generations
     }
 
     pub fn first_tick(&self) -> Option<u64> {
@@ -46,6 +64,10 @@ impl SimulationHistory {
             .transpose()
     }
 
+    pub fn first_generation(&self) -> Option<&GenerationSample> {
+        self.generations.first()
+    }
+
     pub fn last_tick(&self) -> Option<u64> {
         self.last_tick
     }
@@ -57,19 +79,43 @@ impl SimulationHistory {
             .transpose()
     }
 
+    pub fn last_generation(&self) -> Option<&GenerationSample> {
+        self.generations.last()
+    }
+
     pub fn first(&self) -> Option<HistorySample> {
-        match (self.first_tick(), self.first_counts()) {
-            (Some(tick), Some(counts)) => Some(HistorySample { tick, counts }),
-            (None, None) => None,
-            _ => unreachable!("SimulationHistory tick and counts columns have mismatched lengths"),
+        match (
+            self.first_tick(),
+            self.first_counts(),
+            self.first_generation().cloned(),
+        ) {
+            (Some(tick), Some(counts), Some(generation)) => Some(HistorySample {
+                tick,
+                counts,
+                generation,
+            }),
+            (None, None, None) => None,
+            _ => unreachable!(
+                "SimulationHistory tick, counts, and generation columns have mismatched lengths"
+            ),
         }
     }
 
     pub fn last(&self) -> Option<HistorySample> {
-        match (self.last_tick(), self.last_counts()) {
-            (Some(tick), Some(counts)) => Some(HistorySample { tick, counts }),
-            (None, None) => None,
-            _ => unreachable!("SimulationHistory tick and counts columns have mismatched lengths"),
+        match (
+            self.last_tick(),
+            self.last_counts(),
+            self.last_generation().cloned(),
+        ) {
+            (Some(tick), Some(counts), Some(generation)) => Some(HistorySample {
+                tick,
+                counts,
+                generation,
+            }),
+            (None, None, None) => None,
+            _ => unreachable!(
+                "SimulationHistory tick, counts, and generation columns have mismatched lengths"
+            ),
         }
     }
 
@@ -80,21 +126,39 @@ impl SimulationHistory {
                 .as_ref()
                 .map(|col| col.get(index).copied())
                 .transpose(),
+            self.generations.get(index).cloned(),
         ) {
-            (Some(tick), Some(counts)) => Some(HistorySample { tick, counts }),
-            (None, None) => None,
-            _ => unreachable!("SimulationHistory tick and counts columns have mismatched lengths"),
+            (Some(tick), Some(counts), Some(generation)) => Some(HistorySample {
+                tick,
+                counts,
+                generation,
+            }),
+            (None, None, None) => None,
+            _ => unreachable!(
+                "SimulationHistory tick, counts, and generation columns have mismatched lengths"
+            ),
         }
     }
 
     pub fn clear(&mut self) {
+        self.last_tick = None;
         self.tick.clear();
         self.counts.as_mut().for_each(Vec::clear);
+        self.generations.clear();
     }
 
-    pub fn push(&mut self, HistorySample { tick, counts }: HistorySample) {
+    pub fn push(
+        &mut self,
+        HistorySample {
+            tick,
+            counts,
+            generation,
+        }: HistorySample,
+    ) {
         self.last_tick = Some(tick);
-        if self.last_counts().is_some_and(|it| it == counts) {
+        if self.last_counts().is_some_and(|it| it == counts)
+            && self.generations.last().is_some_and(|g| g == &generation)
+        {
             return;
         }
         self.tick.push(tick);
@@ -102,6 +166,7 @@ impl SimulationHistory {
             .as_mut()
             .zip(counts)
             .for_each(|(col, val)| col.push(val));
+        self.generations.push(generation);
     }
 
     pub fn len(&self) -> usize {
@@ -109,6 +174,7 @@ impl SimulationHistory {
         self.counts
             .as_ref()
             .for_each(|col| debug_assert_eq!(len, col.len()));
+        debug_assert_eq!(len, self.generations.len());
         len
     }
 
@@ -120,6 +186,7 @@ impl SimulationHistory {
         HistoryIter {
             tick: self.tick.iter(),
             counts: self.counts.as_ref().map(|col| col.iter()),
+            generations: self.generations.iter(),
         }
     }
 }
@@ -128,6 +195,7 @@ impl SimulationHistory {
 pub struct HistoryIter<'h> {
     tick: slice::Iter<'h, u64>,
     counts: CellCounts<slice::Iter<'h, u32>>,
+    generations: slice::Iter<'h, GenerationSample>,
 }
 
 impl<'h> IntoIterator for &'h SimulationHistory {
@@ -151,10 +219,17 @@ impl Iterator for HistoryIter<'_> {
                 .as_mut()
                 .map(|it| it.next().copied())
                 .transpose(),
+            self.generations.next().cloned(),
         ) {
-            (Some(tick), Some(counts)) => Some(HistorySample { tick, counts }),
-            (None, None) => None,
-            _ => unreachable!("SimulationHistory tick and counts columns have mismatched lengths"),
+            (Some(tick), Some(counts), Some(generation)) => Some(HistorySample {
+                tick,
+                counts,
+                generation,
+            }),
+            (None, None, None) => None,
+            _ => unreachable!(
+                "SimulationHistory tick, counts, and generation columns have mismatched lengths"
+            ),
         }
     }
 
@@ -174,6 +249,7 @@ impl ExactSizeIterator for HistoryIter<'_> {
                 .iter()
                 .all(|it| len == it.len())
         );
+        debug_assert_eq!(len, self.generations.len());
         len
     }
 }
@@ -186,10 +262,17 @@ impl DoubleEndedIterator for HistoryIter<'_> {
                 .as_mut()
                 .map(|it| it.next_back().copied())
                 .transpose(),
+            self.generations.next_back().cloned(),
         ) {
-            (Some(tick), Some(counts)) => Some(HistorySample { tick, counts }),
-            (None, None) => None,
-            _ => unreachable!("SimulationHistory tick and counts columns have mismatched lengths"),
+            (Some(tick), Some(counts), Some(generation)) => Some(HistorySample {
+                tick,
+                counts,
+                generation,
+            }),
+            (None, None, None) => None,
+            _ => unreachable!(
+                "SimulationHistory tick, counts, and generation columns have mismatched lengths"
+            ),
         }
     }
 }
@@ -247,16 +330,37 @@ impl Plugin for HistoryRecorderPlugin {
     }
 }
 
+fn sample_generations(query: &Query<&Generation, CharacterFilter>) -> GenerationSample {
+    let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut min_gen: Option<u32> = None;
+    let mut max_gen: Option<u32> = None;
+
+    for generation in query {
+        let n = generation.number();
+        *map.entry(n).or_insert(0) += 1;
+        min_gen = Some(min_gen.map_or(n, |m| m.min(n)));
+        max_gen = Some(max_gen.map_or(n, |m| m.max(n)));
+    }
+
+    GenerationSample {
+        oldest_alive: min_gen,
+        youngest: max_gen,
+        counts: map.into_iter().collect(),
+    }
+}
+
 fn on_world_seeded(
     _: On<WorldSeeded>,
     mut history: ResMut<SimulationHistory>,
     tick_count: Res<SimulationTickCount>,
     spatial_grid: Res<SpatialGrid>,
+    generations: Query<&Generation, CharacterFilter>,
 ) {
     history.clear();
     history.push(HistorySample {
         tick: tick_count.0,
         counts: spatial_grid.total_counts(),
+        generation: sample_generations(&generations),
     });
 }
 
@@ -268,11 +372,11 @@ fn record_tick_sample(
     mut history: ResMut<SimulationHistory>,
     tick_count: Res<SimulationTickCount>,
     spatial_grid: Res<SpatialGrid>,
-    // TODO(history): Query `(&Generation, &Age, &Energy, Has<Herbivore>)` here to record evolution stats.
-    // All deferred spawns/despawns from `Step` and `Reproduce` are already flushed before `SimulationSystems::Record`.
+    generations: Query<&Generation, CharacterFilter>,
 ) {
     history.push(HistorySample {
         tick: tick_count.0,
         counts: spatial_grid.total_counts(),
+        generation: sample_generations(&generations),
     });
 }

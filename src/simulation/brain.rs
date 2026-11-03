@@ -1,5 +1,4 @@
-use core::fmt;
-use std::sync::Arc;
+use core::{any::Any, fmt};
 
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
@@ -133,27 +132,44 @@ impl Brain {
     }
 }
 
-pub trait Mutation: fmt::Debug + Sync + Send {
+pub trait Mutation: fmt::Debug + Any + Sync + Send {
     fn apply(&self, old: &Brain) -> Brain;
 }
 
-#[derive(Debug, Clone, Resource)]
-pub struct MutationStrategy(Arc<dyn Mutation>);
+#[derive(Debug, Clone, Copy, PartialEq, Resource)]
+pub enum MutationStrategy {
+    SingleNeuron(SingleNeuronMutation),
+    Distributed(DistributedMutation),
+}
 
-impl MutationStrategy {
-    #[inline]
-    pub fn new<M: Mutation + 'static>(strategy: M) -> Self {
-        Self(Arc::new(strategy))
+impl Default for MutationStrategy {
+    fn default() -> Self {
+        DistributedMutation::default().into()
     }
 }
 
 impl Mutation for MutationStrategy {
     fn apply(&self, old: &Brain) -> Brain {
-        self.0.apply(old)
+        match self {
+            Self::SingleNeuron(strat) => strat.apply(old),
+            Self::Distributed(strat) => strat.apply(old),
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
+impl From<SingleNeuronMutation> for MutationStrategy {
+    fn from(value: SingleNeuronMutation) -> Self {
+        Self::SingleNeuron(value)
+    }
+}
+
+impl From<DistributedMutation> for MutationStrategy {
+    fn from(value: DistributedMutation) -> Self {
+        Self::Distributed(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SingleNeuronMutation;
 
 impl Mutation for SingleNeuronMutation {
@@ -166,7 +182,7 @@ impl Mutation for SingleNeuronMutation {
         if (0..(INPUTS * OUTPUTS)).contains(&what_to_mutate) {
             new.weights[what_to_mutate] = rng.random_range(-1.0..=1.0);
         } else {
-            new.biases[what_to_mutate - INPUTS * OUTPUTS] = rng.random();
+            new.biases[what_to_mutate - INPUTS * OUTPUTS] = rng.random_range(-1.0..=1.0);
         }
 
         new
@@ -197,10 +213,10 @@ impl Mutation for DistributedMutation {
         let mut new = old.clone();
 
         for w in &mut new.weights {
-            *w += rng.random_range(-self.offset..=self.offset)
+            *w += rng.random_range(-self.offset..=self.offset);
         }
         for b in &mut new.biases {
-            *b += rng.random_range(-self.offset..=self.offset)
+            *b += rng.random_range(-self.offset..=self.offset);
         }
 
         new
