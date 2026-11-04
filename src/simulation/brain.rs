@@ -208,15 +208,17 @@ impl DistributedMutation {
 
 impl Mutation for DistributedMutation {
     fn apply(&self, old: &Brain) -> Brain {
+        let offset = self.offset.abs();
+
         let mut rng = rand::rng();
 
         let mut new = old.clone();
 
         for w in &mut new.weights {
-            *w += rng.random_range(-self.offset..=self.offset);
+            *w += rng.random_range(-offset..=offset);
         }
         for b in &mut new.biases {
-            *b += rng.random_range(-self.offset..=self.offset);
+            *b += rng.random_range(-offset..=offset);
         }
 
         new
