@@ -162,7 +162,7 @@ pub(super) fn reproduction(
         .choose(&mut rng)
         .unwrap();
 
-        let child_pos = pos.add_wrapping_signed(I16Vec2::from_array(offset), *field_size);
+        let child_pos = pos.add_wrapping(I16Vec2::from_array(offset), *field_size);
         let child_brain = Mutation::apply(&*mutation_strategy, brain);
         let child_gen = generation.next();
 

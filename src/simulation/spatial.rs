@@ -272,7 +272,7 @@ impl SpatialGrid {
             .iter()
             .copied()
             .map(|offset| {
-                let target = origin.add_wrapping_rotated_offset(offset, facing, self.size);
+                let target = origin.add_wrapping_rotated(offset, facing, self.size);
                 let mut cell_counts = self.counts[self.idx(target)];
 
                 // Do not count the sensing character itself on its own tile (0, 0) in `near`
@@ -295,7 +295,7 @@ impl SpatialGrid {
         exclude_self: Entity,
     ) -> Option<(Entity, GridPosition)> {
         for &offset in near_offsets {
-            let target_pos = origin.add_wrapping_rotated_offset(offset, facing, self.size);
+            let target_pos = origin.add_wrapping_rotated(offset, facing, self.size);
             let i = self.idx(target_pos);
             if self.counts[i][target_kind] == 0 {
                 continue;

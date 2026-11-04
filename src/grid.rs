@@ -50,13 +50,9 @@ impl GridPosition {
         }
     }
 
-    pub fn add_wrapping_rotated_offset(
-        self,
-        offset: I16Vec2,
-        dir: Facing,
-        bounds: GridSize,
-    ) -> Self {
-        let rotated_offset = dir.rotate_offset(offset);
+    #[must_use]
+    pub fn add_wrapping_rotated(self, offset: I16Vec2, facing: Facing, bounds: GridSize) -> Self {
+        let rotated_offset = facing.rotate_offset(offset);
         let raw = self.as_ivec2() + rotated_offset.as_ivec2();
         let wrapped = U16Vec2::new(
             raw.x.rem_euclid(i32::from(bounds.x)) as u16,
@@ -65,7 +61,8 @@ impl GridPosition {
         Self(wrapped)
     }
 
-    pub fn add_wrapping_signed(self, offset: I16Vec2, bounds: GridSize) -> Self {
+    #[must_use]
+    pub fn add_wrapping(self, offset: I16Vec2, bounds: GridSize) -> Self {
         let raw = self.as_ivec2() + offset.as_ivec2();
         let wrapped = U16Vec2::new(
             raw.x.rem_euclid(i32::from(bounds.x)) as u16,
@@ -105,6 +102,7 @@ pub enum Facing {
 }
 
 impl Facing {
+    #[must_use]
     pub const fn clockwise(self) -> Self {
         match self {
             Self::North => Self::East,
@@ -114,6 +112,7 @@ impl Facing {
         }
     }
 
+    #[must_use]
     pub const fn counterclockwise(self) -> Self {
         match self {
             Self::North => Self::West,
@@ -123,6 +122,7 @@ impl Facing {
         }
     }
 
+    #[must_use]
     pub const fn to_angle(self) -> f32 {
         match self {
             Self::North => 0.0,
@@ -132,7 +132,8 @@ impl Facing {
         }
     }
 
-    pub const fn to_complex(self) -> Complex<i16> {
+    #[must_use]
+    pub const fn to_complex(self) -> Complex<i8> {
         match self {
             Self::North => Complex::new(1, 0),
             Self::East => Complex::new(0, -1),
@@ -141,10 +142,12 @@ impl Facing {
         }
     }
 
+    #[must_use]
     pub fn to_quat(self) -> Quat {
         Quat::from_rotation_z(self.to_angle())
     }
 
+    #[must_use]
     pub const fn to_step_delta(self) -> I16Vec2 {
         match self {
             Self::North => I16Vec2::Y,
@@ -154,9 +157,14 @@ impl Facing {
         }
     }
 
-    pub fn rotate_offset(self, offset: I16Vec2) -> I16Vec2 {
-        let Complex { re, im } = Complex::new(offset.x, offset.y) * self.to_complex();
-        I16Vec2 { x: re, y: im }
+    #[must_use]
+    pub const fn rotate_offset(self, offset: I16Vec2) -> I16Vec2 {
+        match self {
+            Self::North => offset,
+            Self::East => I16Vec2::new(offset.y, -offset.x),
+            Self::South => I16Vec2::new(-offset.y, -offset.x), // -offset,
+            Self::West => I16Vec2::new(-offset.y, offset.x),
+        }
     }
 }
 

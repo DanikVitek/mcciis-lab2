@@ -13,7 +13,8 @@ use crate::{
             sense_brain_inputs,
         },
         organism::{
-            Age, Energy, EntityKind, Generation, Herbivore, MaxEnergy, Predator, ValueAsFood,
+            Age, CharacterFilter, Energy, EntityKind, Generation, Herbivore, MaxEnergy, Predator,
+            ValueAsFood,
         },
         spatial::SpatialGrid,
     },
@@ -47,7 +48,7 @@ pub struct CharacterBrainSnapshot<'a> {
 
 /// Custom [`SystemParam`] encapsulating all queries needed by the brain inspector UI.
 #[derive(SystemParam)]
-#[allow(clippy::type_complexity)]
+#[expect(clippy::type_complexity)]
 pub struct CharacterInspector<'w, 's> {
     pub inspected: Res<'w, InspectedCharacter>,
     pub spatial_grid: Res<'w, SpatialGrid>,
@@ -65,7 +66,7 @@ pub struct CharacterInspector<'w, 's> {
             &'static SensorOffsets,
             Has<Herbivore>,
         ),
-        Or<(With<Herbivore>, With<Predator>)>,
+        CharacterFilter,
     >,
 }
 
@@ -142,7 +143,10 @@ impl Plugin for BrainInspectorUiPlugin {
                             .and_then(not(egui_wants_any_pointer_input)),
                     ),
             )
-            .add_systems(EguiPrimaryContextPass, render_inspector_panels);
+            .add_systems(
+                EguiPrimaryContextPass,
+                render_inspector_panels.run_if(resource_equals(HistoryPlotOpen(false))),
+            );
     }
 }
 
@@ -206,14 +210,9 @@ fn select_character_on_click(
 fn render_inspector_panels(
     mut contexts: EguiContexts,
     inspector: CharacterInspector,
-    plot_open: Res<HistoryPlotOpen>,
     max_energy: Res<MaxEnergy>,
     mut commands: Commands,
 ) -> Result {
-    if plot_open.0 {
-        return Ok(());
-    }
-
     let Some(snapshot) = inspector.snapshot() else {
         return Ok(());
     };
@@ -454,11 +453,10 @@ fn render_pov_panel_contents(
         for local_y in -1..=2 {
             for local_x in -2..=2 {
                 let offset = I16Vec2::new(local_x, local_y);
-                let world_tile = snapshot.position.add_wrapping_rotated_offset(
-                    offset,
-                    snapshot.facing,
-                    grid_size,
-                );
+                let world_tile =
+                    snapshot
+                        .position
+                        .add_wrapping_rotated(offset, snapshot.facing, grid_size);
                 let r = tile_rect(local_x, local_y);
                 let center = r.center();
 
