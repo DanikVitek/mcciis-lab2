@@ -63,15 +63,16 @@ dependencies = ["build-dev", "build-prod"]
 private = true
 condition = { profiles = ["development"] }
 command = "cargo"
-args = ["run", "-F", "dev"]
+args = ["run", "-F", "dev", "--", "${@}"]
 
 [tasks.run-prod]
 private = true
 condition = { profiles = ["production"] }
 command = "cargo"
-args = ["run", "--release"]
+args = ["run", "--release", "--", "${@}"]
 
 [tasks.run]
+clear = true
 dependencies = ["run-dev", "run-prod"]
 
 [tasks.test-dev]
