@@ -28,16 +28,17 @@ use life_sim::{
         },
     },
     simulation::{
-        DeferredSimulationPlugin, DistributionConfig, HistoryRecorderPlugin, MutationStrategy,
+        DeferredReproductionPlugin, DeferredSimulationPlugin, DistributionConfig,
+        HistoryRecorderPlugin, MutationStrategy, ReproductionPlugin, ReproductionThreshold,
         SimulationHistory, SimulationPlugin, SimulationTickCount,
-        organism::{CharacterFilter, Herbivore, InitialEnergy, MaxEnergy, Plant, Predator},
+        organism::{CharacterFilter, Energy, Herbivore, InitialEnergy, MaxEnergy, Plant, Predator},
         spatial::SpatialGrid,
     },
 };
 
 /// Builds a headless Bevy [`App`] with the full [`PresentationPlugin`] (`SimulationPacingPlugin`,
-/// `SpritesPlugin`, `CameraPlugin`, and `UiPlugin`) and [`DeferredSimulationPlugin`] without
-/// opening an OS window or requiring a GPU render device.
+/// `SpritesPlugin`, `CameraPlugin`, and `UiPlugin`), [`DeferredSimulationPlugin`], and
+/// [`DeferredReproductionPlugin`] without opening an OS window or requiring a GPU render device.
 fn build_headless_presentation_app() -> App {
     let mut app = App::new();
     app.add_plugins((
@@ -56,6 +57,7 @@ fn build_headless_presentation_app() -> App {
     .init_asset::<TextureAtlasLayout>()
     .add_plugins((
         DeferredSimulationPlugin,
+        DeferredReproductionPlugin,
         HistoryRecorderPlugin::default(),
         PresentationPlugin::new(Duration::from_millis(250)),
     ));
@@ -96,6 +98,7 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
     assert!(!app.world().contains_resource::<MutationStrategy>());
     assert!(!app.world().contains_resource::<InitialEnergy>());
     assert!(!app.world().contains_resource::<MaxEnergy>());
+    assert!(!app.world().contains_resource::<ReproductionThreshold>());
     assert!(!app.world().contains_resource::<SimulationTickCount>());
     assert!(app.world().resource::<SimulationHistory>().is_empty());
 
@@ -123,8 +126,9 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         config.plants_fraction = 0.25;
         config.herbivores_fraction = 0.10;
         config.predators_fraction = 0.05;
-        config.initial_energy = InitialEnergy(12);
-        config.max_energy = MaxEnergy(24);
+        config.initial_energy = 12.into();
+        config.max_energy = 24.into();
+        config.reproduction_threshold = ReproductionThreshold::Absolute(Energy(18));
     }
 
     app.world_mut()
@@ -144,8 +148,12 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         SimulationPlaybackState::Running
     );
     assert_eq!(*app.world().resource::<GridSize>(), custom_size);
-    assert_eq!(*app.world().resource::<InitialEnergy>(), InitialEnergy(12));
-    assert_eq!(*app.world().resource::<MaxEnergy>(), MaxEnergy(24));
+    assert_eq!(*app.world().resource::<InitialEnergy>(), 12.into());
+    assert_eq!(*app.world().resource::<MaxEnergy>(), 24.into());
+    assert_eq!(
+        *app.world().resource::<ReproductionThreshold>(),
+        ReproductionThreshold::Absolute(Energy(18))
+    );
     assert_eq!(app.world().resource::<SimulationTickCount>().0, 0);
 
     let totals = app.world().resource::<SpatialGrid>().total_counts();
@@ -266,8 +274,8 @@ fn presentation_hotkeys_and_playback_pacing_control_simulation_ticks() {
         config.plants_fraction = 0.2;
         config.herbivores_fraction = 0.2;
         config.predators_fraction = 0.0;
-        config.initial_energy = InitialEnergy(50);
-        config.max_energy = MaxEnergy(100);
+        config.initial_energy = 50.into();
+        config.max_energy = 100.into();
         config.speed_mode = SimulationSpeedMode::Uncapped;
     }
     app.world_mut()
@@ -362,6 +370,7 @@ fn brain_inspector_reads_snapshot_and_clears_on_character_death() {
             .initial_energy(50)
             .max_energy(100)
             .build(),
+        ReproductionPlugin::default(),
         BrainInspectorUiPlugin,
     ));
     app.update();
@@ -403,8 +412,9 @@ fn brain_inspector_reads_snapshot_and_clears_on_character_death() {
         .world_mut()
         .run_system_once(move |inspector: CharacterInspector| {
             let snap = inspector.snapshot()?;
+
             assert_eq!(snap.entity, second_selected);
-            assert_eq!(snap.energy.current(), 50);
+            assert_eq!(snap.energy, Energy(50));
             assert_eq!(snap.generation.number(), 1);
             assert_eq!(inspector.pick_random_character(), Some(first_selected));
             Some(())

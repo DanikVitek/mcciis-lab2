@@ -13,10 +13,11 @@ use life_sim::{
     grid::GridSize,
     presentation::{PresentationPlugin, pacing::SimulationSpeedMode, ui::config::SimConfig},
     simulation::{
-        DeferredSimulationPlugin, DistributedMutation, DistributionConfig, HistoryRecorderPlugin,
-        MutationStrategy, SimulationHistory, SimulationPlugin, SimulationTick, SimulationTickCount,
-        SingleNeuronMutation,
-        organism::{InitialEnergy, MaxEnergy},
+        DeferredReproductionPlugin, DeferredSimulationPlugin, DistributedMutation,
+        DistributionConfig, HistoryRecorderPlugin, MutationStrategy, ReproductionPlugin,
+        ReproductionThreshold, SimulationHistory, SimulationPlugin, SimulationTick,
+        SimulationTickCount, SingleNeuronMutation,
+        organism::{Energy, InitialEnergy, MaxEnergy},
         spatial::SpatialGrid,
     },
 };
@@ -35,6 +36,9 @@ enum CliCommand {
     /// Run headless batch experiments across a parameter grid and export CSVs for the lab protocol.
     Headless(HeadlessArgs),
 }
+
+const DEFAULT_INITIAL_ENERGY: InitialEnergy = InitialEnergy(Energy(5));
+const DEFAULT_MAX_ENERGY: MaxEnergy = MaxEnergy(Energy(10));
 
 #[derive(Debug, Clone, Args)]
 struct VisualArgs {
@@ -59,12 +63,12 @@ struct VisualArgs {
     predators: f32,
 
     /// Initial energy of newly seeded organisms.
-    #[arg(long, default_value_t = 5)]
-    initial_energy: u8,
+    #[arg(long, default_value_t = DEFAULT_INITIAL_ENERGY)]
+    initial_energy: InitialEnergy,
 
     /// Maximum energy capacity of organisms.
-    #[arg(long, default_value_t = 10)]
-    max_energy: u8,
+    #[arg(long, default_value_t = DEFAULT_MAX_ENERGY)]
+    max_energy: MaxEnergy,
 
     /// Seconds per simulation tick in FixedStep mode.
     #[arg(long, default_value_t = 0.5)]
@@ -79,8 +83,8 @@ impl Default for VisualArgs {
             plants: 0.1,
             herbivores: 0.1,
             predators: 0.1,
-            initial_energy: 5,
-            max_energy: 10,
+            initial_energy: 5.into(),
+            max_energy: 10.into(),
             tick_interval_secs: 0.5,
         }
     }
@@ -120,12 +124,12 @@ struct HeadlessArgs {
     predators: Vec<f32>,
 
     /// Comma-separated list of initial organism energies to sweep.
-    #[arg(long, value_delimiter = ',', default_values_t = [5_u8, 8_u8])]
-    initial_energy: Vec<u8>,
+    #[arg(long, value_delimiter = ',', default_values_t = [5_u8, 8_u8].map(InitialEnergy::from))]
+    initial_energy: Vec<InitialEnergy>,
 
     /// Comma-separated list of maximum organism energy capacities to sweep.
-    #[arg(long, value_delimiter = ',', default_values_t = [10_u8, 20_u8])]
-    max_energy: Vec<u8>,
+    #[arg(long, value_delimiter = ',', default_values_t = [10_u8, 20_u8].map(MaxEnergy::from))]
+    max_energy: Vec<MaxEnergy>,
 
     /// Number of independent repetitions to execute per parameter configuration.
     #[arg(short = 'r', long, default_value_t = 1)]
@@ -202,8 +206,9 @@ fn run_visual(args: VisualArgs) {
         plants_fraction: args.plants,
         herbivores_fraction: args.herbivores,
         predators_fraction: args.predators,
-        initial_energy: InitialEnergy(args.initial_energy),
-        max_energy: MaxEnergy(args.max_energy),
+        initial_energy: args.initial_energy,
+        max_energy: args.max_energy,
+        reproduction_threshold: ReproductionThreshold::default(),
         tick_interval,
         speed_mode: SimulationSpeedMode::default(),
         mutation: MutationStrategy::default(),
@@ -214,6 +219,7 @@ fn run_visual(args: VisualArgs) {
         .add_plugins((
             DefaultPlugins.set(ImagePlugin::default_nearest()),
             DeferredSimulationPlugin,
+            DeferredReproductionPlugin,
             HistoryRecorderPlugin::default(),
             PresentationPlugin::new(tick_interval),
         ))
@@ -227,8 +233,8 @@ struct Grid<'a> {
     plants_fraction: &'a [f32],
     herbivores_fraction: &'a [f32],
     predators_fraction: &'a [f32],
-    initial_energy: &'a [u8],
-    max_energy: &'a [u8],
+    initial_energy: &'a [InitialEnergy],
+    max_energy: &'a [MaxEnergy],
 }
 
 impl Grid<'_> {
@@ -244,7 +250,7 @@ impl Grid<'_> {
                 self.initial_energy.iter().copied(),
                 self.max_energy.iter().copied()
             )
-            .all(|(initial, max)| initial > max)
+            .all(|(InitialEnergy(initial), MaxEnergy(max))| initial > max)
             || iproduct!(
                 self.plants_fraction.iter().copied(),
                 self.herbivores_fraction.iter().copied(),
@@ -281,7 +287,7 @@ impl Grid<'_> {
                 self.initial_energy.iter().copied(),
                 self.max_energy.iter().copied(),
             )
-            .filter(|&(initial, max)| initial <= max)
+            .filter(|&(InitialEnergy(initial), MaxEnergy(max))| initial <= max)
             .fold(0_u64, |acc, _| acc + 1)
     }
 
@@ -309,8 +315,8 @@ impl Grid<'_> {
                     .ok()
             }),
             iproduct!(
-                self.initial_energy.iter().copied().map(InitialEnergy),
-                self.max_energy.iter().copied().map(MaxEnergy),
+                self.initial_energy.iter().copied(),
+                self.max_energy.iter().copied(),
             )
             .filter(|&(InitialEnergy(initial), MaxEnergy(max))| initial <= max)
         )
@@ -452,6 +458,8 @@ fn execute_single_headless_run(
             .distribution(point.distribution)
             .initial_energy(point.initial_energy)
             .max_energy(point.max_energy)
+            .build(),
+        ReproductionPlugin::builder()
             .mutation_strategy(point.mutation_strategy)
             .build(),
         HistoryRecorderPlugin::every(sample_rate),

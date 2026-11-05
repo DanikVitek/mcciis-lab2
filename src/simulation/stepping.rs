@@ -1,20 +1,28 @@
 use bevy::ecs::entity::EntityHashSet;
-use bevy::math::I16Vec2;
 use bevy::prelude::*;
-use rand::seq::IndexedRandom;
 
 use crate::grid::{Facing, GridPosition, GridSize};
 
 use super::{
-    brain::{Action, Brain, Mutation, MutationStrategy, SensorOffsets, sense_brain_inputs},
-    organism::{
-        Age, Energy, EntityKind, Generation, Herbivore, MaxEnergy, Plant, Predator, ValueAsFood,
-    },
+    SimulationSystems, SimulationTick,
+    brain::{Action, Brain, SensorOffsets, sense_brain_inputs},
+    organism::{Age, Energy, EntityKind, Herbivore, MaxEnergy, Plant, Predator, ValueAsFood},
     spatial::SpatialGrid,
 };
 
+pub(super) struct SteppingPlugin;
+
+impl Plugin for SteppingPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            SimulationTick,
+            step_organisms.in_set(SimulationSystems::Step),
+        );
+    }
+}
+
 #[allow(clippy::type_complexity)]
-pub(super) fn step_organisms(
+fn step_organisms(
     mut commands: Commands,
     mut spatial_grid: ResMut<SpatialGrid>,
     field_size: Res<GridSize>,
@@ -117,86 +125,5 @@ pub(super) fn step_organisms(
                 age.increment();
             }
         }
-    }
-}
-
-#[allow(clippy::type_complexity)]
-pub(super) fn reproduction(
-    mut commands: Commands,
-    mut spatial_grid: ResMut<SpatialGrid>,
-    field_size: Res<GridSize>,
-    max_energy: Res<MaxEnergy>,
-    mutation_strategy: Res<MutationStrategy>,
-    query: Query<(
-        Entity,
-        &mut Energy,
-        &Brain,
-        &GridPosition,
-        &Facing,
-        &Generation,
-        Has<Herbivore>,
-    )>,
-) {
-    let mut rng = rand::rng();
-    for (entity, mut energy, brain, pos, facing, generation, is_herbivore) in query {
-        if !energy.is_enough_to_reproduce(*max_energy) {
-            continue;
-        }
-
-        let entity_kind = if is_herbivore {
-            EntityKind::Herbivore
-        } else {
-            EntityKind::Predator
-        };
-
-        let offset = *[
-            [-1, -1],
-            [-1, 0],
-            [-1, 1],
-            [0, -1],
-            [0, 1],
-            [1, -1],
-            [1, 0],
-            [1, 1],
-        ]
-        .choose(&mut rng)
-        .unwrap();
-
-        let child_pos = pos.add_wrapping(I16Vec2::from_array(offset), *field_size);
-        let child_brain = Mutation::apply(&*mutation_strategy, brain);
-        let child_gen = generation.next();
-
-        let res = energy.distribute();
-
-        if res.is_deceased() {
-            commands.entity(entity).despawn();
-            spatial_grid.remove(*pos, entity, entity_kind);
-        }
-        let child_energy = res.into_value();
-
-        let child = if is_herbivore {
-            commands
-                .spawn((
-                    Herbivore,
-                    child_pos,
-                    *facing,
-                    child_brain,
-                    child_gen,
-                    child_energy,
-                ))
-                .id()
-        } else {
-            commands
-                .spawn((
-                    Predator,
-                    child_pos,
-                    *facing,
-                    child_brain,
-                    child_gen,
-                    child_energy,
-                ))
-                .id()
-        };
-        spatial_grid.insert(child_pos, child, entity_kind);
     }
 }

@@ -1,4 +1,4 @@
-use core::{fmt, num::NonZeroU32};
+use core::{fmt, num::NonZeroU32, ops::Add, str::FromStr};
 
 use bevy::prelude::*;
 
@@ -8,13 +8,13 @@ use super::brain::Brain;
 pub type CharacterFilter = Or<(With<Herbivore>, With<Predator>)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
-#[require(ValueAsFood(1))]
+#[require(ValueAsFood(1.into()))]
 pub struct Plant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
 #[require(
     Age,
-    ValueAsFood(2),
+    ValueAsFood(2.into()),
     Generation,
     Brain = rand::random::<Brain>(),
 )]
@@ -49,27 +49,69 @@ impl Age {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
-pub struct Energy(u8);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
+#[repr(transparent)]
+pub struct Energy(pub u8);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Resource)]
-pub struct InitialEnergy(pub u8);
-
-impl Default for InitialEnergy {
-    fn default() -> Self {
-        Self(5)
-    }
-}
-
-impl From<u8> for InitialEnergy {
+impl From<u8> for Energy {
     fn from(value: u8) -> Self {
         Self(value)
     }
 }
 
+impl From<Energy> for u8 {
+    fn from(value: Energy) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for Energy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for Energy {
+    type Err = <u8 as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        u8::from_str(s).map(Self)
+    }
+}
+
+impl Add for Energy {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self(self.0 + rhs.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Resource)]
+#[repr(transparent)]
+pub struct InitialEnergy(pub Energy);
+
+impl Default for InitialEnergy {
+    fn default() -> Self {
+        5.into()
+    }
+}
+
+impl From<Energy> for InitialEnergy {
+    fn from(value: Energy) -> Self {
+        Self(value)
+    }
+}
+
+impl From<u8> for InitialEnergy {
+    fn from(value: u8) -> Self {
+        Self(value.into())
+    }
+}
+
 impl From<InitialEnergy> for Energy {
     fn from(value: InitialEnergy) -> Self {
-        Self(value.0)
+        value.0
     }
 }
 
@@ -79,17 +121,32 @@ impl fmt::Display for InitialEnergy {
     }
 }
 
+impl FromStr for InitialEnergy {
+    type Err = <Energy as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Energy::from_str(s).map(Self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Resource)]
-pub struct MaxEnergy(pub u8);
+#[repr(transparent)]
+pub struct MaxEnergy(pub Energy);
 
 impl Default for MaxEnergy {
     fn default() -> Self {
-        Self(10)
+        10.into()
     }
 }
 
 impl From<u8> for MaxEnergy {
     fn from(value: u8) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<Energy> for MaxEnergy {
+    fn from(value: Energy) -> Self {
         Self(value)
     }
 }
@@ -97,6 +154,14 @@ impl From<u8> for MaxEnergy {
 impl fmt::Display for MaxEnergy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+impl FromStr for MaxEnergy {
+    type Err = <Energy as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Energy::from_str(s).map(Self)
     }
 }
 
@@ -126,27 +191,25 @@ impl<T> DecrementResult<T> {
 }
 
 impl Energy {
-    pub const REPRO_THRESHOLD: f32 = 0.9;
+    pub fn saturating_add(self, rhs: Self) -> Self {
+        Self(self.0.saturating_add(rhs.0))
+    }
 
-    pub const fn current(self) -> u8 {
-        self.0
+    pub fn saturating_sub(self, rhs: Self) -> Self {
+        Self(self.0.saturating_sub(rhs.0))
     }
 
     pub fn increment(&mut self, ValueAsFood(value): ValueAsFood, MaxEnergy(max): MaxEnergy) {
-        self.0 = u8::min(max, self.0.saturating_add(value));
+        *self = Ord::min(max, self.saturating_add(value));
     }
 
     pub fn decrement(&mut self) -> DecrementResult<()> {
-        self.0 = self.0.saturating_sub(1);
+        *self = self.saturating_sub(1.into());
 
         DecrementResult {
             value: (),
             deceased: self.0 == 0,
         }
-    }
-
-    pub const fn is_enough_to_reproduce(self, MaxEnergy(max): MaxEnergy) -> bool {
-        self.0 >= (max as f32 * Self::REPRO_THRESHOLD) as u8
     }
 
     pub fn distribute(&mut self) -> DecrementResult<Energy> {
@@ -162,10 +225,11 @@ impl Energy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
-pub struct ValueAsFood(pub u8);
+#[repr(transparent)]
+pub struct ValueAsFood(pub Energy);
 
 impl ValueAsFood {
-    pub const fn per_tick(self) -> u8 {
+    pub const fn per_tick(self) -> Energy {
         self.0
     }
 }

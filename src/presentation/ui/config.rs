@@ -1,17 +1,21 @@
 use core::num::NonZeroU64;
 use std::time::Duration;
 
-use bevy::prelude::*;
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use bevy::{ecs::system::SystemParam, prelude::*};
+use bevy_egui::{
+    EguiContexts, EguiPrimaryContextPass,
+    egui::{self, emath::Numeric},
+};
 
 use crate::{
     grid::GridSize,
     presentation::pacing::{AppState, SimulationPlaybackState, SimulationSpeedMode},
     simulation::{
         DistributedMutation, DistributionConfig, DistributionError, MutationStrategy,
-        ResetSimulation, SimulationTickCount, SingleNeuronMutation, StepSimulationOnce,
+        ReproductionThreshold, ResetSimulation, SimulationTickCount, SingleNeuronMutation,
+        StepSimulationOnce,
         history::SampleRate,
-        organism::{InitialEnergy, MaxEnergy},
+        organism::{Energy, InitialEnergy, MaxEnergy},
         spatial::SpatialGrid,
     },
 };
@@ -30,9 +34,58 @@ pub struct SimConfig {
     pub predators_fraction: f32,
     pub initial_energy: InitialEnergy,
     pub max_energy: MaxEnergy,
+    pub reproduction_threshold: ReproductionThreshold,
     pub tick_interval: Duration,
     pub speed_mode: SimulationSpeedMode,
     pub mutation: MutationStrategy,
+}
+
+impl Numeric for Energy {
+    const INTEGRAL: bool = true;
+
+    const MIN: Self = Self(u8::MIN);
+
+    const MAX: Self = Self(u8::MAX);
+
+    fn to_f64(self) -> f64 {
+        self.0 as f64
+    }
+
+    fn from_f64(num: f64) -> Self {
+        Self(num as u8)
+    }
+}
+
+impl Numeric for InitialEnergy {
+    const INTEGRAL: bool = Energy::INTEGRAL;
+
+    const MIN: Self = Self(Energy::MIN);
+
+    const MAX: Self = Self(Energy::MAX);
+
+    fn to_f64(self) -> f64 {
+        self.0.to_f64()
+    }
+
+    fn from_f64(num: f64) -> Self {
+        Self(Energy::from_f64(num))
+    }
+}
+
+impl Numeric for MaxEnergy {
+    const INTEGRAL: bool = Energy::INTEGRAL;
+
+    const MIN: Self = Self(Energy::MIN);
+
+    const MAX: Self = Self(Energy::MAX);
+
+    fn to_f64(self) -> f64 {
+        self.0.to_f64()
+    }
+
+    fn from_f64(num: f64) -> Self {
+        Self(Energy::from_f64(num))
+    }
 }
 
 impl FromWorld for SimConfig {
@@ -64,17 +117,22 @@ impl FromWorld for SimConfig {
             .get_resource::<MaxEnergy>()
             .copied()
             .unwrap_or_default();
+        let reproduction_threshold = world
+            .get_resource::<ReproductionThreshold>()
+            .copied()
+            .unwrap_or_default();
 
         Self {
             grid_size,
             plants_fraction: dist.plants_fraction(),
             herbivores_fraction: dist.herbivores_fraction(),
             predators_fraction: dist.predators_fraction(),
+            initial_energy,
+            max_energy,
+            reproduction_threshold,
             tick_interval,
             speed_mode,
             mutation,
-            initial_energy,
-            max_energy,
         }
     }
 }
@@ -107,6 +165,7 @@ impl SimConfig {
         commands.insert_resource(self.mutation);
         commands.insert_resource(self.initial_energy);
         commands.insert_resource(self.max_energy);
+        commands.insert_resource(self.reproduction_threshold);
         commands.insert_resource(SimulationTickCount::default());
         commands.trigger(ResetSimulation);
         Ok(())
@@ -131,6 +190,14 @@ impl SimConfig {
         commands.trigger(ResetSimulation);
         Ok(())
     }
+}
+
+#[derive(SystemParam)]
+struct LiveLifecycleResources<'w> {
+    initial_energy: ResMut<'w, InitialEnergy>,
+    max_energy: ResMut<'w, MaxEnergy>,
+    reproduction_threshold: Option<ResMut<'w, ReproductionThreshold>>,
+    mutation_strategy: Option<ResMut<'w, MutationStrategy>>,
 }
 
 /// Helper commands for playback controls (Pause / Resume / Step Once) from UI widgets or hotkeys.
@@ -179,6 +246,56 @@ pub fn setup_simulation_from_config(
     config
         .insert_resources_and_start(&mut commands, &mut fixed_time, &mut speed_mode)
         .expect("validated SimConfig before entering AppState::Simulation");
+}
+
+fn render_reproduction_threshold_controls(ui: &mut egui::Ui, config: &mut SimConfig) -> bool {
+    let mut changed = false;
+    let is_relative = matches!(
+        config.reproduction_threshold,
+        ReproductionThreshold::Relative(_)
+    );
+
+    ui.horizontal(|ui| {
+        ui.label("Repro threshold:");
+        if ui.selectable_label(is_relative, "Relative").clicked() && !is_relative {
+            config.reproduction_threshold = ReproductionThreshold::default();
+            changed = true;
+        }
+        if ui.selectable_label(!is_relative, "Absolute").clicked() && is_relative {
+            let abs = config.reproduction_threshold.min_energy(config.max_energy);
+            config.reproduction_threshold = ReproductionThreshold::Absolute(Energy(abs.0.max(1)));
+            changed = true;
+        }
+    });
+
+    match config.reproduction_threshold {
+        ReproductionThreshold::Relative(ref mut fraction) => {
+            if ui
+                .add(
+                    egui::Slider::new(fraction, 0.0..=1.0)
+                        .text("Fraction")
+                        .fixed_decimals(2),
+                )
+                .changed()
+            {
+                changed = true;
+            }
+        }
+        ReproductionThreshold::Absolute(ref mut energy) => {
+            if ui
+                .add(
+                    egui::DragValue::new(energy)
+                        .range(1..=u8::MAX)
+                        .prefix("Energy ≥ "),
+                )
+                .changed()
+            {
+                changed = true;
+            }
+        }
+    }
+
+    changed
 }
 
 fn render_initial_setup_ui(
@@ -288,22 +405,36 @@ fn render_initial_setup_ui(
 
             ui.horizontal(|ui| {
                 ui.label("Initial energy:");
-                ui.add(egui::DragValue::new(&mut config.initial_energy.0).range(1..=u8::MAX));
+                ui.add(egui::DragValue::new(&mut config.initial_energy).range(1..=u8::MAX));
             });
             ui.add_space(2.0);
 
             ui.horizontal(|ui| {
                 ui.label("Max energy:");
-                ui.add(egui::DragValue::new(&mut config.max_energy.0).range(1..=u8::MAX));
+                ui.add(egui::DragValue::new(&mut config.max_energy).range(1..=u8::MAX));
             });
+            ui.add_space(2.0);
 
-            let energy_valid = config.initial_energy.0 <= config.max_energy.0;
-            if !energy_valid {
+            render_reproduction_threshold_controls(ui, &mut config);
+
+            let initial_valid = config.initial_energy.0 <= config.max_energy.0;
+            if !initial_valid {
                 ui.colored_label(
                     egui::Color32::from_rgb(255, 100, 100),
                     "Initial energy must not exceed Max energy!",
                 );
             }
+
+            let repro_valid = config
+                .reproduction_threshold
+                .is_valid_for(config.max_energy);
+            if !repro_valid {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 100, 100),
+                    "Reproduction threshold must not exceed Max energy!",
+                );
+            }
+            let energy_valid = initial_valid && repro_valid;
             ui.add_space(4.0);
 
             let current_kind = match config.mutation {
@@ -438,9 +569,7 @@ fn render_config_ui(
     mut next_playback_state: ResMut<NextState<SimulationPlaybackState>>,
     mut fixed_time: ResMut<Time<Fixed>>,
     mut speed_mode: ResMut<SimulationSpeedMode>,
-    mut mutation_strategy: ResMut<MutationStrategy>,
-    mut initial_energy: ResMut<InitialEnergy>,
-    mut max_energy: ResMut<MaxEnergy>,
+    mut lifecycle: LiveLifecycleResources,
     mut grid_size: ResMut<GridSize>,
     mut distribution: ResMut<DistributionConfig>,
     mut sample_rate: Option<ResMut<SampleRate>>,
@@ -577,14 +706,14 @@ fn render_config_ui(
             ui.horizontal(|ui| {
                 ui.label("Initial energy:");
                 if ui
-                    .add(egui::DragValue::new(&mut config.initial_energy.0))
+                    .add(egui::DragValue::new(&mut config.initial_energy).range(1..=u8::MAX))
                     .changed()
                 {
                     initial_energy_changed = true;
                 }
             });
             if initial_energy_changed {
-                *initial_energy = config.initial_energy;
+                *lifecycle.initial_energy = config.initial_energy;
             }
             ui.add_space(4.0);
 
@@ -592,14 +721,21 @@ fn render_config_ui(
             ui.horizontal(|ui| {
                 ui.label("Max energy:");
                 if ui
-                    .add(egui::DragValue::new(&mut config.max_energy.0))
+                    .add(egui::DragValue::new(&mut config.max_energy).range(1..=u8::MAX))
                     .changed()
                 {
                     max_energy_changed = true;
                 }
             });
             if max_energy_changed {
-                *max_energy = config.max_energy;
+                *lifecycle.max_energy = config.max_energy;
+            }
+            ui.add_space(4.0);
+
+            if render_reproduction_threshold_controls(ui, &mut config)
+                && let Some(ref mut repro_threshold) = lifecycle.reproduction_threshold
+            {
+                **repro_threshold = config.reproduction_threshold;
             }
             ui.add_space(4.0);
 
@@ -654,8 +790,9 @@ fn render_config_ui(
                 }
             }
 
-            if mutation_changed {
-                *mutation_strategy = config.mutation;
+            if mutation_changed && let Some(ref mut mutation_strategy) = lifecycle.mutation_strategy
+            {
+                **mutation_strategy = config.mutation;
             }
 
             ui.add_space(6.0);

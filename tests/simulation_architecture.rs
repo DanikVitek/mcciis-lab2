@@ -8,9 +8,9 @@ use bevy::prelude::*;
 use life_sim::{
     grid::{GridPosition, GridSize},
     simulation::{
-        DistributionConfig, HeadlessRunnerPlugin, HistoryRecorderPlugin, ResetSimulation,
-        SampleRate, SimulationHistory, SimulationPlugin, SimulationSystems, SimulationTick,
-        SimulationTickCount, StepSimulationOnce, WorldSeeded,
+        DistributionConfig, HeadlessRunnerPlugin, HistoryRecorderPlugin, ReproductionPlugin,
+        ResetSimulation, SampleRate, SimulationHistory, SimulationPlugin, SimulationSystems,
+        SimulationTick, SimulationTickCount, StepSimulationOnce, WorldSeeded,
         organism::{EntityKind, Herbivore, Plant, Predator},
         spatial::{CellCounts, SpatialGrid},
     },
@@ -152,14 +152,15 @@ fn headless_simulation_runs_without_fixed_update_or_graphics() {
         .unwrap();
 
     let mut app = App::new();
-    app.add_plugins(
+    app.add_plugins((
         SimulationPlugin::builder()
             .grid_size(GridSize::new(20, 20))
             .distribution(dist)
             .initial_energy(50)
             .max_energy(100)
             .build(),
-    );
+        ReproductionPlugin::default(),
+    ));
 
     // Runs `Startup` (`seed_world`) once.
     app.update();
@@ -199,6 +200,51 @@ fn headless_simulation_runs_without_fixed_update_or_graphics() {
 }
 
 #[test]
+fn simulation_runs_with_swapped_reproduction_strategy() {
+    #[derive(Resource, Default)]
+    struct CustomReproductionRuns(u64);
+
+    struct CustomReproductionPlugin;
+    impl Plugin for CustomReproductionPlugin {
+        fn build(&self, app: &mut App) {
+            app.init_resource::<CustomReproductionRuns>().add_systems(
+                SimulationTick,
+                (|mut runs: ResMut<CustomReproductionRuns>| {
+                    runs.0 += 1;
+                })
+                .in_set(SimulationSystems::Reproduce),
+            );
+        }
+    }
+
+    let dist = DistributionConfig::builder()
+        .plants_fraction(0.1)
+        .herbivores_fraction(0.1)
+        .predators_fraction(0.05)
+        .build()
+        .unwrap();
+
+    let mut app = App::new();
+    app.add_plugins((
+        SimulationPlugin::builder()
+            .grid_size(GridSize::new(10, 10))
+            .distribution(dist)
+            .initial_energy(50)
+            .max_energy(100)
+            .build(),
+        CustomReproductionPlugin,
+    ));
+    app.update();
+
+    for _ in 0..10 {
+        app.world_mut().run_schedule(SimulationTick);
+    }
+
+    assert_eq!(app.world().resource::<SimulationTickCount>().0, 10);
+    assert_eq!(app.world().resource::<CustomReproductionRuns>().0, 10);
+}
+
+#[test]
 fn headless_runner_plugin_exits_at_target_ticks() {
     let dist = DistributionConfig::builder()
         .plants_fraction(0.1)
@@ -219,6 +265,7 @@ fn headless_runner_plugin_exits_at_target_ticks() {
             .initial_energy(50)
             .max_energy(100)
             .build(),
+        ReproductionPlugin::default(),
         HeadlessRunnerPlugin::for_ticks(25),
     ))
     .add_systems(Last, move |ticks: Res<SimulationTickCount>| {
@@ -241,14 +288,15 @@ fn reset_and_step_once_events_reconfigure_and_advance_world() {
         .unwrap();
 
     let mut app = App::new();
-    app.add_plugins(
+    app.add_plugins((
         SimulationPlugin::builder()
             .grid_size(GridSize::new(10, 10))
             .distribution(dist)
             .initial_energy(50)
             .max_energy(100)
             .build(),
-    );
+        ReproductionPlugin::default(),
+    ));
     app.update();
 
     app.world_mut().trigger(StepSimulationOnce);

@@ -1,3 +1,5 @@
+use core::fmt;
+
 use bevy::{ecs::system::SystemParam, math::I16Vec2, prelude::*, window::PrimaryWindow};
 use bevy_egui::{
     EguiContexts, EguiPrimaryContextPass, egui,
@@ -9,6 +11,7 @@ use crate::{
     grid::{Facing, GridPosition, GridSize},
     presentation::{pacing::AppState, sprites::world_to_grid_pos},
     simulation::{
+        ReproductionThreshold,
         brain::{
             Action, Brain, BrainInputs, BrainOutputs, INPUTS, OUTPUTS, SensorOffsets,
             sense_brain_inputs,
@@ -261,6 +264,7 @@ fn render_pov_panel(
     mut contexts: EguiContexts,
     inspector: CharacterInspector,
     max_energy: Res<MaxEnergy>,
+    repro_threshold: Option<Res<ReproductionThreshold>>,
     mut commands: Commands,
 ) -> Result {
     let Some(snapshot) = inspector.snapshot() else {
@@ -289,6 +293,7 @@ fn render_pov_panel(
                 &snapshot,
                 &inspector.spatial_grid,
                 *max_energy,
+                repro_threshold.as_deref().copied(),
                 &mut should_unfollow,
                 &mut should_follow_random,
             );
@@ -347,6 +352,7 @@ fn render_pov_panel_contents(
     snapshot: &CharacterBrainSnapshot<'_>,
     spatial_grid: &SpatialGrid,
     max_energy: MaxEnergy,
+    repro_threshold: Option<ReproductionThreshold>,
     should_unfollow: &mut bool,
     should_follow_random: &mut bool,
 ) {
@@ -390,17 +396,30 @@ fn render_pov_panel_contents(
         );
     });
 
-    let energy_cur = snapshot.energy.current();
-    let energy_frac = f32::from(energy_cur) / f32::from(max_energy.0);
+    let energy_cur = snapshot.energy;
+    let energy_frac = f32::from(energy_cur.0) / f32::from(max_energy.0.0);
     ui.add_space(2.0);
     ui.add(
         egui::ProgressBar::new(energy_frac)
             .fill(egui::Color32::from_rgb(55, 165, 225))
             .text(format!(
-                "Energy: {} / {} (-1/tick, repro ≥ {})",
+                "Energy: {} / {} (-1/tick{})",
                 energy_cur,
                 max_energy,
-                max_energy.0 as f32 * Energy::REPRO_THRESHOLD
+                fmt::from_fn(|f| {
+                    let Some(threshold) = repro_threshold else {
+                        return Ok(());
+                    };
+                    write!(f, ", repro ≥ ")?;
+                    match threshold {
+                        ReproductionThreshold::Absolute(ref threshold) => {
+                            fmt::Display::fmt(threshold, f)
+                        }
+                        ReproductionThreshold::Relative(fraction) => {
+                            fmt::Display::fmt(&(max_energy.0.0 as f32 * fraction), f)
+                        }
+                    }
+                })
             )),
     );
 

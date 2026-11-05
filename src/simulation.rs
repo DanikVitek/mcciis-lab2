@@ -1,9 +1,10 @@
 pub mod brain;
 pub mod history;
-mod lifecycle;
 pub mod organism;
+pub mod reproduction;
 pub mod seed;
 pub mod spatial;
+mod stepping;
 
 use bevy::app::AppExit;
 use bevy::ecs::schedule::ScheduleLabel;
@@ -11,13 +12,19 @@ use bevy::prelude::*;
 
 use crate::grid::GridSize;
 
-pub use self::brain::{DistributedMutation, Mutation, MutationStrategy, SingleNeuronMutation};
 pub use self::history::{
     GenerationSample, HistoryRecorderPlugin, HistorySample, SampleRate, SimulationHistory,
 };
-use self::organism::{CharacterFilter, InitialEnergy, MaxEnergy};
+pub use self::reproduction::{
+    DeferredReproductionPlugin, DistributedMutation, Mutation, MutationStrategy,
+    ReproductionPlugin, ReproductionThreshold, SingleNeuronMutation,
+};
 pub use self::seed::{DistributionConfig, DistributionError};
-use self::spatial::SpatialGrid;
+use self::{
+    organism::{CharacterFilter, InitialEnergy, MaxEnergy},
+    spatial::SpatialGrid,
+    stepping::SteppingPlugin,
+};
 
 /// Run condition returning `true` while at least one character organism (`Herbivore` or `Predator`) is alive.
 pub fn has_living_organisms(organisms: Query<(), CharacterFilter>) -> bool {
@@ -36,6 +43,8 @@ pub struct SimulationTick;
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SimulationSystems {
     Step,
+    /// Reproduction phase between [`Step`](Self::Step) and [`Record`](Self::Record),
+    /// populated by a swappable reproduction plugin such as [`ReproductionPlugin`] or [`DeferredReproductionPlugin`].
     Reproduce,
     /// End-of-tick telemetry / history recording phase.
     ///
@@ -63,7 +72,7 @@ pub struct ResetSimulation;
 #[derive(Debug, Clone, Copy, Default, Event)]
 pub struct StepSimulationOnce;
 
-/// Registers the [`SimulationTick`] schedule, system sets, tick systems, and reset/step observers
+/// Registers the [`SimulationTick`] schedule, system sets, stepping system, and reset/step observers
 /// without inserting configuration resources or seeding the world automatically on `Startup`.
 ///
 /// Used directly in visual mode where configuration [`Resource`]s are inserted only after the user
@@ -83,15 +92,12 @@ impl Plugin for DeferredSimulationPlugin {
                 )
                     .chain(),
             )
+            .add_plugins(SteppingPlugin)
             .add_systems(
                 SimulationTick,
-                (
-                    lifecycle::step_organisms.in_set(SimulationSystems::Step),
-                    lifecycle::reproduction.in_set(SimulationSystems::Reproduce),
-                    advance_tick_counter
-                        .after_ignore_deferred(SimulationSystems::Reproduce)
-                        .before_ignore_deferred(SimulationSystems::Record),
-                ),
+                advance_tick_counter
+                    .after_ignore_deferred(SimulationSystems::Reproduce)
+                    .before_ignore_deferred(SimulationSystems::Record),
             )
             .add_observer(seed::on_reset_simulation)
             .add_observer(on_step_simulation_once);
@@ -99,8 +105,11 @@ impl Plugin for DeferredSimulationPlugin {
 }
 
 /// Schedule-agnostic, headless-ready ecosystem simulation plugin that immediately inserts
-/// all simulation [`Resource`]s and seeds the world on `Startup`.
-#[derive(bon::Builder)]
+/// world and energy [`Resource`]s and seeds the world on `Startup`.
+///
+/// Pair with [`ReproductionPlugin`] (or a custom reproduction plugin) to enable reproduction
+/// during [`SimulationSystems::Reproduce`].
+#[derive(Debug, Clone, bon::Builder)]
 pub struct SimulationPlugin {
     pub grid_size: GridSize,
     pub distribution: DistributionConfig,
@@ -108,16 +117,6 @@ pub struct SimulationPlugin {
     pub initial_energy: InitialEnergy,
     #[builder(into)]
     pub max_energy: MaxEnergy,
-    #[builder(into, default)]
-    pub mutation_strategy: MutationStrategy,
-}
-
-impl SimulationPlugin {
-    #[inline]
-    pub fn with_mutation(mut self, strategy: impl Into<MutationStrategy>) -> Self {
-        self.mutation_strategy = strategy.into();
-        self
-    }
 }
 
 impl Plugin for SimulationPlugin {
@@ -125,7 +124,6 @@ impl Plugin for SimulationPlugin {
         app.insert_resource(self.grid_size)
             .insert_resource(self.distribution)
             .insert_resource(SpatialGrid::new(self.grid_size))
-            .insert_resource(self.mutation_strategy)
             .insert_resource(self.initial_energy)
             .insert_resource(self.max_energy)
             .init_resource::<SimulationTickCount>()
