@@ -12,7 +12,7 @@ use crate::{
 
 use super::{
     pacing::AppState,
-    sprites::{TILE_SIZE, WATER_DARK_COLOR, grid_origin_offset},
+    sprites::{SpriteTransformSystems, TILE_SIZE, WATER_DARK_COLOR, grid_origin_offset},
     ui::inspector::InspectedCharacter,
 };
 
@@ -43,6 +43,7 @@ impl Plugin for CameraPlugin {
                 PostUpdate,
                 follow_inspected_character
                     .run_if(in_state(AppState::Simulation))
+                    .after(SpriteTransformSystems)
                     .before(TransformSystems::Propagate),
             );
     }
@@ -113,7 +114,7 @@ fn zoom_camera_to_cursor(
     // 2. Apply the new zoom scale
     projection.scale = new_scale;
 
-    // 3. Clamp camera center so the camera cannot pan past the grid edges when zooming out.
+    // 3. Clamp camera center so at least one cell of the grid remains visible
     // `projection.area` holds the unscaled base bounds * `old_scale`, so we rescale it to `new_scale`
     let new_viewport_size = projection.area.size() * scale_ratio;
     clamp_camera_to_grid(&mut camera_transform, new_viewport_size, &field_size);
@@ -185,15 +186,17 @@ fn follow_inspected_character(
     clamp_camera_to_grid(&mut camera_transform, projection.area.size(), &field_size);
 }
 
-/// Clamps the camera translation so the viewport never scrolls past the outer grid edges.
-/// `viewport_world_size` is the visible world area at the current `ortho.scale`.
+/// Clamps the camera translation so the viewport never leaves the grid completely
+/// (at least one [`TILE_SIZE`] cell of the grid remains visible along each axis).
 fn clamp_camera_to_grid(
     camera_transform: &mut Transform,
     viewport_world_size: Vec2,
     field_size: &GridSize,
 ) {
     let world_size = field_size.as_vec2() * TILE_SIZE;
-    let max_offset = ((world_size - viewport_world_size) / 2.0).max(Vec2::ZERO);
+    let outermost_tile_center = (world_size - TILE_SIZE) / 2.0;
+    let max_offset =
+        ((world_size + viewport_world_size) / 2.0 - TILE_SIZE).max(outermost_tile_center);
 
     camera_transform.translation.x = camera_transform
         .translation

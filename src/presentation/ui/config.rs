@@ -16,7 +16,10 @@ use crate::{
     },
 };
 
-use super::{HistoryPlotOpen, VIEWPORT_MARGIN};
+use super::{
+    HistoryPlotOpen, VIEWPORT_MARGIN,
+    inspector::{CharacterInspector, InspectedCharacter},
+};
 
 /// Staged form state edited by the configuration UI before applying changes to live resources.
 #[derive(Debug, Clone, Copy, PartialEq, Resource)]
@@ -150,6 +153,7 @@ pub struct SimConfigUiPlugin;
 impl Plugin for SimConfigUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimConfig>()
+            .init_resource::<InspectedCharacter>()
             .add_systems(
                 OnEnter(AppState::Simulation),
                 (setup_simulation_from_config, ApplyDeferred).chain(),
@@ -441,7 +445,7 @@ fn render_config_ui(
     mut distribution: ResMut<DistributionConfig>,
     mut sample_rate: Option<ResMut<SampleRate>>,
     tick_count: Res<SimulationTickCount>,
-    spatial_grid: Res<SpatialGrid>,
+    inspector: CharacterInspector,
     mut plot_open: ResMut<HistoryPlotOpen>,
     mut commands: Commands,
 ) -> Result {
@@ -471,7 +475,7 @@ fn render_config_ui(
                 .inner_margin(12.0),
         )
         .show(ctx, |ui| {
-            let totals = spatial_grid.total_counts();
+            let totals = inspector.spatial_grid.total_counts();
             let has_organisms = totals.herbivores > 0 || totals.predators > 0;
             let is_paused = *playback_state.get() == SimulationPlaybackState::Paused;
 
@@ -706,6 +710,20 @@ fn render_config_ui(
             }
 
             ui.add_space(6.0);
+            if ui
+                .add_enabled_ui(has_organisms, |ui| {
+                    ui.add_sized(
+                        [ui.available_width(), 26.0],
+                        egui::Button::new("🎲 Follow Random Character"),
+                    )
+                })
+                .inner
+                .clicked()
+            {
+                commands.insert_resource(InspectedCharacter(inspector.pick_random_character()));
+            }
+
+            ui.add_space(4.0);
             if ui
                 .add_sized(
                     [ui.available_width(), 26.0],

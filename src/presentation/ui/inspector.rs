@@ -3,6 +3,7 @@ use bevy_egui::{
     EguiContexts, EguiPrimaryContextPass, egui,
     input::{EguiWantsInput, egui_wants_any_pointer_input},
 };
+use rand::seq::IteratorRandom;
 
 use crate::{
     grid::{Facing, GridPosition, GridSize},
@@ -23,10 +24,26 @@ use crate::{
 use super::{HistoryPlotOpen, UiSystems, VIEWPORT_MARGIN};
 
 const MAX_CLICK_DRAG_DISTANCE_PX: f32 = 5.0;
+const INSPECTOR_PANEL_WIDTH: f32 = 350.0;
 
 /// Tracks which character entity (`Herbivore` or `Predator`), if any, is currently selected for inspection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Resource)]
 pub struct InspectedCharacter(pub Option<Entity>);
+
+/// Selects a random living character (`Herbivore` or `Predator`), preferring an entity
+/// different from `inspected.0` when more than one character is alive.
+pub fn follow_random_character(
+    characters: &Query<Entity, CharacterFilter>,
+    inspected: &mut InspectedCharacter,
+) {
+    let mut rng = rand::rng();
+    let current = inspected.0;
+    inspected.0 = characters
+        .iter()
+        .filter(|&entity| Some(entity) != current)
+        .choose(&mut rng)
+        .or_else(|| characters.iter().choose(&mut rng));
+}
 
 /// Read-only view-model snapshot of an inspected character's vitals and live [`Brain`] activations.
 #[derive(Debug)]
@@ -56,6 +73,7 @@ pub struct CharacterInspector<'w, 's> {
         'w,
         's,
         (
+            Entity,
             &'static GridPosition,
             &'static Facing,
             &'static Age,
@@ -75,6 +93,24 @@ impl<'w, 's> CharacterInspector<'w, 's> {
         self.inspected.0
     }
 
+    /// Picks a random living character (`Herbivore` or `Predator`), preferring one different
+    /// from the currently inspected character when more than one character exists.
+    pub fn pick_random_character(&self) -> Option<Entity> {
+        let mut rng = rand::rng();
+        let current = self.inspected.0;
+        self.characters
+            .iter()
+            .map(|(entity, ..)| entity)
+            .filter(|&entity| Some(entity) != current)
+            .choose(&mut rng)
+            .or_else(|| {
+                self.characters
+                    .iter()
+                    .map(|(entity, ..)| entity)
+                    .choose(&mut rng)
+            })
+    }
+
     /// Finds the first inspectable character (`Herbivore` or `Predator`) standing on `tile`.
     pub fn find_character_at(&self, tile: GridPosition) -> Option<Entity> {
         self.spatial_grid
@@ -90,6 +126,7 @@ impl<'w, 's> CharacterInspector<'w, 's> {
     pub fn snapshot(&self) -> Option<CharacterBrainSnapshot<'_>> {
         let entity = self.inspected.0?;
         let (
+            _,
             &position,
             &facing,
             &age,
@@ -145,7 +182,7 @@ impl Plugin for BrainInspectorUiPlugin {
             )
             .add_systems(
                 EguiPrimaryContextPass,
-                render_inspector_panels
+                (render_pov_panel, render_neural_network_panel)
                     .run_if(in_state(AppState::Simulation))
                     .run_if(resource_equals(HistoryPlotOpen(false))),
             );
@@ -209,7 +246,18 @@ fn select_character_on_click(
     }
 }
 
-fn render_inspector_panels(
+fn inspector_window_frame(style: &egui::Style) -> egui::Frame {
+    egui::Frame::window(style)
+        .fill(egui::Color32::from_rgba_unmultiplied(12, 24, 38, 232))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgb(56, 108, 156),
+        ))
+        .corner_radius(8.0)
+        .inner_margin(12.0)
+}
+
+fn render_pov_panel(
     mut contexts: EguiContexts,
     inspector: CharacterInspector,
     max_energy: Res<MaxEnergy>,
@@ -220,69 +268,66 @@ fn render_inspector_panels(
     };
 
     let ctx = contexts.ctx_mut()?;
-    let panel_width = 350.0;
-    let mut should_unfollow = false;
     let style = ctx.global_style();
+    let mut should_unfollow = false;
+    let mut should_follow_random = false;
 
-    // --- 1. Upper-Right Panel: Organism POV & Sensor Zone Activations ---
     egui::Window::new("Organism POV & Sensors")
         .id(egui::Id::new("inspector_pov_upper_panel"))
         .anchor(
             egui::Align2::RIGHT_TOP,
             egui::vec2(-VIEWPORT_MARGIN, VIEWPORT_MARGIN),
         )
-        .default_width(panel_width)
+        .default_width(INSPECTOR_PANEL_WIDTH)
         .resizable(false)
         .collapsible(true)
-        .frame(
-            egui::Frame::window(&style)
-                .fill(egui::Color32::from_rgba_unmultiplied(12, 24, 38, 232))
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgb(56, 108, 156),
-                ))
-                .corner_radius(8.0)
-                .inner_margin(12.0),
-        )
+        .frame(inspector_window_frame(&style))
         .show(ctx, |ui| {
-            ui.set_width(panel_width);
+            ui.set_width(INSPECTOR_PANEL_WIDTH);
             render_pov_panel_contents(
                 ui,
                 &snapshot,
                 &inspector.spatial_grid,
                 *max_energy,
                 &mut should_unfollow,
+                &mut should_follow_random,
             );
         });
 
-    // --- 2. Lower-Right Panel: Neural Network Processing Diagram ---
+    if should_unfollow {
+        commands.insert_resource(InspectedCharacter(None));
+    } else if should_follow_random {
+        commands.insert_resource(InspectedCharacter(inspector.pick_random_character()));
+    }
+
+    Ok(())
+}
+
+fn render_neural_network_panel(
+    mut contexts: EguiContexts,
+    inspector: CharacterInspector,
+) -> Result {
+    let Some(snapshot) = inspector.snapshot() else {
+        return Ok(());
+    };
+
+    let ctx = contexts.ctx_mut()?;
+    let style = ctx.global_style();
+
     egui::Window::new("Neural Network Activity")
         .id(egui::Id::new("inspector_nn_lower_panel"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
             egui::vec2(-VIEWPORT_MARGIN, -VIEWPORT_MARGIN),
         )
-        .default_width(panel_width)
+        .default_width(INSPECTOR_PANEL_WIDTH)
         .resizable(false)
         .collapsible(true)
-        .frame(
-            egui::Frame::window(&style)
-                .fill(egui::Color32::from_rgba_unmultiplied(12, 24, 38, 232))
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgb(56, 108, 156),
-                ))
-                .corner_radius(8.0)
-                .inner_margin(12.0),
-        )
+        .frame(inspector_window_frame(&style))
         .show(ctx, |ui| {
-            ui.set_width(panel_width);
+            ui.set_width(INSPECTOR_PANEL_WIDTH);
             render_neural_network_panel_contents(ui, &snapshot);
         });
-
-    if should_unfollow {
-        commands.insert_resource(InspectedCharacter(None));
-    }
 
     Ok(())
 }
@@ -303,6 +348,7 @@ fn render_pov_panel_contents(
     spatial_grid: &SpatialGrid,
     max_energy: MaxEnergy,
     should_unfollow: &mut bool,
+    should_follow_random: &mut bool,
 ) {
     let (species_name, species_color) = match snapshot.kind {
         EntityKind::Herbivore => ("Herbivore", egui::Color32::from_rgb(240, 215, 70)),
@@ -318,6 +364,9 @@ fn render_pov_panel_contents(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.small_button("✖ Unfollow (Esc)").clicked() {
                 *should_unfollow = true;
+            }
+            if ui.small_button("🎲 Random").clicked() {
+                *should_follow_random = true;
             }
         });
     });
@@ -462,6 +511,7 @@ fn render_pov_panel_contents(
                 let r = tile_rect(local_x, local_y);
                 let center = r.center();
 
+                let mut self_color = None;
                 for &(ent, kind) in spatial_grid.entities_at(world_tile) {
                     match kind {
                         EntityKind::Plant => {
@@ -472,26 +522,14 @@ fn render_pov_panel_contents(
                             );
                         }
                         EntityKind::Herbivore | EntityKind::Predator => {
-                            let is_self = ent == snapshot.entity;
                             let body_color = if kind == EntityKind::Herbivore {
                                 egui::Color32::from_rgb(240, 215, 70)
                             } else {
                                 egui::Color32::from_rgb(240, 85, 85)
                             };
 
-                            if is_self {
-                                // Ego organism at (0, 0), always facing Up in its own POV
-                                painter.circle_stroke(
-                                    center,
-                                    13.0,
-                                    egui::Stroke::new(2.0, egui::Color32::WHITE),
-                                );
-                                draw_oriented_bacterium(
-                                    &painter,
-                                    center,
-                                    egui::vec2(0.0, -1.0),
-                                    body_color,
-                                );
+                            if ent == snapshot.entity {
+                                self_color = Some(body_color);
                             } else {
                                 painter.circle_filled(center, 7.5, body_color);
                                 painter.circle_stroke(
@@ -502,6 +540,16 @@ fn render_pov_panel_contents(
                             }
                         }
                     }
+                }
+
+                if let Some(body_color) = self_color {
+                    // Ego organism at (0, 0), always facing Up in its own POV and drawn on top
+                    painter.circle_stroke(
+                        center,
+                        13.0,
+                        egui::Stroke::new(2.0, egui::Color32::WHITE),
+                    );
+                    draw_oriented_bacterium(&painter, center, egui::vec2(0.0, -1.0), body_color);
                 }
             }
         }

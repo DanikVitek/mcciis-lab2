@@ -11,23 +11,26 @@ use bevy::{
     window::{ExitCondition, WindowPlugin},
 };
 use life_sim::{
-    grid::GridSize,
+    grid::{GridPosition, GridSize},
     presentation::{
         AppState, PresentationPlugin, SimulationPlaybackState, SimulationSpeedMode,
         sprites::{
-            GridBackground, GridRootEntity, GridVisualRoot, PreviousPose, TILE_SIZE,
-            grid_origin_offset,
+            GridBackground, GridRootEntity, GridVisualRoot, PreviousPose, SelectionHighlight,
+            TILE_SIZE, grid_origin_offset, grid_to_local_xy,
         },
         ui::{
             HistoryPlotOpen,
             config::SimConfig,
-            inspector::{BrainInspectorUiPlugin, CharacterInspector, InspectedCharacter},
+            inspector::{
+                BrainInspectorUiPlugin, CharacterInspector, InspectedCharacter,
+                follow_random_character,
+            },
         },
     },
     simulation::{
         DeferredSimulationPlugin, DistributionConfig, HistoryRecorderPlugin, MutationStrategy,
         SimulationHistory, SimulationPlugin, SimulationTickCount,
-        organism::{Herbivore, InitialEnergy, MaxEnergy, Plant, Predator},
+        organism::{CharacterFilter, Herbivore, InitialEnergy, MaxEnergy, Plant, Predator},
         spatial::SpatialGrid,
     },
 };
@@ -96,7 +99,7 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
     assert!(!app.world().contains_resource::<SimulationTickCount>());
     assert!(app.world().resource::<SimulationHistory>().is_empty());
 
-    // `SpritesPlugin` spawns `GridBackground` hidden during `AppState::Setup`.
+    // `SpritesPlugin` spawns `GridBackground` and `SelectionHighlight` hidden during `AppState::Setup`.
     {
         let world = app.world_mut();
         let bg_vis = world
@@ -104,6 +107,12 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
             .single(world)
             .expect("spawned GridBackground");
         assert_eq!(*bg_vis, Visibility::Hidden);
+
+        let highlight_vis = world
+            .query_filtered::<&Visibility, With<SelectionHighlight>>()
+            .single(world)
+            .expect("spawned SelectionHighlight");
+        assert_eq!(*highlight_vis, Visibility::Hidden);
     }
 
     // Edit staged `SimConfig` and accept it by transitioning `AppState` to `AppState::Simulation`.
@@ -189,6 +198,59 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
             .filter(|c| c.0 == grid_root)
             .count();
         assert_eq!(character_sprites, 30);
+    }
+
+    // Place a character at the corner of the grid `(0, 0)` and follow it:
+    // Verify `Camera2d` centers directly on the edge character and `SelectionHighlight` becomes visible.
+    let (edge_entity, edge_pos) = {
+        let world = app.world_mut();
+        let entity = world
+            .query_filtered::<Entity, With<Herbivore>>()
+            .iter(world)
+            .next()
+            .expect("seeded herbivore");
+        let corner = GridPosition::new(0, 0);
+        *world.get_mut::<GridPosition>(entity).unwrap() = corner;
+        world.get_mut::<Transform>(entity).unwrap().translation =
+            grid_to_local_xy(corner).extend(1.0);
+        (entity, corner)
+    };
+
+    app.world_mut().resource_mut::<InspectedCharacter>().0 = Some(edge_entity);
+    app.update();
+
+    {
+        let world = app.world_mut();
+        let camera_transform = world
+            .query_filtered::<&Transform, With<Camera2d>>()
+            .single(world)
+            .expect("Camera2d transform");
+        let expected_world_xy = grid_origin_offset(custom_size) + grid_to_local_xy(edge_pos);
+        assert_eq!(camera_transform.translation.truncate(), expected_world_xy);
+
+        let (highlight_transform, highlight_vis) = world
+            .query_filtered::<(&Transform, &Visibility), With<SelectionHighlight>>()
+            .single(world)
+            .expect("SelectionHighlight");
+        assert_eq!(*highlight_vis, Visibility::Inherited);
+        assert_eq!(
+            highlight_transform.translation.truncate(),
+            grid_to_local_xy(edge_pos)
+        );
+    }
+
+    // Pressing `Escape` unfollows the character and hides `SelectionHighlight`.
+    send_key_press(&mut app, KeyCode::Escape);
+    app.update();
+
+    assert_eq!(app.world().resource::<InspectedCharacter>().0, None);
+    {
+        let world = app.world_mut();
+        let highlight_vis = world
+            .query_filtered::<&Visibility, With<SelectionHighlight>>()
+            .single(world)
+            .expect("SelectionHighlight visibility");
+        assert_eq!(*highlight_vis, Visibility::Hidden);
     }
 }
 
@@ -287,7 +349,7 @@ fn presentation_auto_pauses_when_all_organisms_die() {
 fn brain_inspector_reads_snapshot_and_clears_on_character_death() {
     let dist = DistributionConfig::builder()
         .plants_fraction(0.1)
-        .herbivores_fraction(0.2)
+        .herbivores_fraction(0.02)
         .predators_fraction(0.0)
         .build()
         .unwrap();
@@ -304,29 +366,54 @@ fn brain_inspector_reads_snapshot_and_clears_on_character_death() {
     ));
     app.update();
 
-    let herbivore = app
-        .world_mut()
-        .query_filtered::<Entity, With<Herbivore>>()
-        .iter(app.world())
-        .next()
-        .expect("seeded herbivore");
+    // Follow a random character when none is currently selected (2 herbivores seeded).
+    app.world_mut()
+        .run_system_once(
+            |characters: Query<Entity, CharacterFilter>,
+             mut inspected: ResMut<InspectedCharacter>| {
+                follow_random_character(&characters, &mut inspected);
+            },
+        )
+        .unwrap();
 
-    app.world_mut().resource_mut::<InspectedCharacter>().0 = Some(herbivore);
+    let first_selected = app
+        .world()
+        .resource::<InspectedCharacter>()
+        .0
+        .expect("randomly selected character");
+
+    // Calling `follow_random_character` again with 2 living characters must switch to the other character.
+    app.world_mut()
+        .run_system_once(
+            |characters: Query<Entity, CharacterFilter>,
+             mut inspected: ResMut<InspectedCharacter>| {
+                follow_random_character(&characters, &mut inspected);
+            },
+        )
+        .unwrap();
+
+    let second_selected = app
+        .world()
+        .resource::<InspectedCharacter>()
+        .0
+        .expect("switched random character");
+    assert_ne!(first_selected, second_selected);
 
     let has_snapshot = app
         .world_mut()
         .run_system_once(move |inspector: CharacterInspector| {
             let snap = inspector.snapshot()?;
-            assert_eq!(snap.entity, herbivore);
+            assert_eq!(snap.entity, second_selected);
             assert_eq!(snap.energy.current(), 50);
             assert_eq!(snap.generation.number(), 1);
+            assert_eq!(inspector.pick_random_character(), Some(first_selected));
             Some(())
         })
         .unwrap();
     assert!(has_snapshot.is_some());
 
     // Despawning the inspected character must automatically clear `InspectedCharacter`.
-    app.world_mut().despawn(herbivore);
+    app.world_mut().despawn(second_selected);
     app.world_mut().flush();
 
     assert_eq!(app.world().resource::<InspectedCharacter>().0, None);

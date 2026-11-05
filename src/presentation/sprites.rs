@@ -5,11 +5,14 @@ use crate::{
     grid::{Facing, GridPosition, GridSize},
     simulation::{
         SimulationSystems, SimulationTick, WorldSeeded,
-        organism::{Herbivore, Plant, Predator},
+        organism::{CharacterFilter, Herbivore, Plant, Predator},
     },
 };
 
-use super::pacing::{AppState, SimulationSpeedMode};
+use super::{
+    pacing::{AppState, SimulationSpeedMode},
+    ui::inspector::InspectedCharacter,
+};
 
 pub const TILE_SIZE: Vec2 = Vec2::splat(32.0);
 
@@ -20,6 +23,13 @@ pub const WATER_DARK_COLOR: Color = Color::oklch(0.32, 0.075, 248.0);
 pub const WATER_CELL_COLOR: Color = Color::oklch(0.44, 0.088, 242.0);
 
 const GRID_BACKGROUND_Z: f32 = -1.0;
+const INSPECTED_CHARACTER_Z: f32 = 3.0;
+const SELECTION_HIGHLIGHT_Z: f32 = 3.5;
+const SELECTION_HIGHLIGHT_SCALE: f32 = 1.6;
+
+/// System set in `PostUpdate` that updates grid and organism `Transform`s before camera follow and transform propagation.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpriteTransformSystems;
 
 /// World-space translation of tile `(0, 0)` so the entire [`GridSize`] field is centered at `(0, 0)`.
 pub fn grid_origin_offset(grid_size: GridSize) -> Vec2 {
@@ -57,6 +67,10 @@ pub struct GridVisualRoot;
 /// Marker component for the single background quad rendering the water cells and darker cell borders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
 pub struct GridBackground;
+
+/// Marker component for the highlight ring rendered around the currently inspected character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
+pub struct SelectionHighlight;
 
 /// Resource storing the [`Entity`] of [`GridVisualRoot`] for fast `O(1)` parenting in observers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource)]
@@ -99,6 +113,20 @@ pub struct GridBackgroundMaterial {
 impl MaterialExtension2d for GridBackgroundMaterial {
     fn fragment_shader() -> Option<bevy::shader::ShaderRef> {
         Some("shaders/grid_background.wesl".into())
+    }
+}
+
+#[derive(Debug, Clone, Asset, AsBindGroup, Reflect)]
+pub struct SelectionHighlightMaterial {
+    #[uniform(100)]
+    pub ring_color: LinearRgba,
+    #[uniform(101)]
+    pub outline_color: LinearRgba,
+}
+
+impl MaterialExtension2d for SelectionHighlightMaterial {
+    fn fragment_shader() -> Option<bevy::shader::ShaderRef> {
+        Some("shaders/selection_highlight.wesl".into())
     }
 }
 
@@ -157,7 +185,13 @@ impl HasDedicatedZ for Predator {
 }
 
 const _: () = {
-    assert!(GRID_BACKGROUND_Z < Plant::Z && Plant::Z < Herbivore::Z && Herbivore::Z < Predator::Z);
+    assert!(
+        GRID_BACKGROUND_Z < Plant::Z
+            && Plant::Z < Herbivore::Z
+            && Herbivore::Z < Predator::Z
+            && Predator::Z < INSPECTED_CHARACTER_Z
+            && INSPECTED_CHARACTER_Z < SELECTION_HIGHLIGHT_Z
+    );
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component)]
@@ -178,6 +212,7 @@ impl Plugin for SpritesPlugin {
         app.add_plugins((
             SpriteMaterialPlugin::<PaletteSwapMaterial>::default(),
             SpriteMaterialPlugin::<GridBackgroundMaterial>::default(),
+            SpriteMaterialPlugin::<SelectionHighlightMaterial>::default(),
         ))
         .add_systems(PreStartup, setup_visual_root_and_sprites)
         .add_observer(attach_visuals_to_plant)
@@ -188,9 +223,8 @@ impl Plugin for SpritesPlugin {
             SimulationTick,
             (
                 remember_previous_pose.before(SimulationSystems::Step),
-                reset_step_transition,
-            )
-                .run_if(resource_equals(SimulationSpeedMode::FixedStep)),
+                reset_step_transition.run_if(resource_equals(SimulationSpeedMode::FixedStep)),
+            ),
         )
         .add_systems(
             Update,
@@ -212,8 +246,10 @@ impl Plugin for SpritesPlugin {
                 (sync_translation_with_grid::<()>, sync_rotation_with_grid)
                     .chain_weak()
                     .run_if(resource_equals(SimulationSpeedMode::Uncapped)),
+                sync_selection_highlight,
             )
                 .chain_weak()
+                .in_set(SpriteTransformSystems)
                 .run_if(in_state(AppState::Simulation))
                 .before(TransformSystems::Propagate),
         )
@@ -226,6 +262,7 @@ fn setup_visual_root_and_sprites(
     asset_server: Res<AssetServer>,
     mut shaders: ResMut<Assets<PaletteSwapMaterial>>,
     mut bg_materials: ResMut<Assets<GridBackgroundMaterial>>,
+    mut highlight_materials: ResMut<Assets<SelectionHighlightMaterial>>,
 ) {
     let placeholder_size = GridSize::default();
 
@@ -253,6 +290,23 @@ fn setup_visual_root_and_sprites(
         Transform::from_xyz(0.0, 0.0, GRID_BACKGROUND_Z),
         Visibility::Hidden,
         SpriteMaterial(bg_material),
+    ));
+
+    let highlight_material = highlight_materials.add(SelectionHighlightMaterial {
+        ring_color: LinearRgba::new(0.25, 0.95, 1.0, 1.0),
+        outline_color: LinearRgba::new(0.02, 0.08, 0.14, 1.0),
+    });
+
+    commands.spawn((
+        SelectionHighlight,
+        ChildOf(root),
+        Sprite {
+            custom_size: Some(TILE_SIZE * SELECTION_HIGHLIGHT_SCALE),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, SELECTION_HIGHLIGHT_Z),
+        Visibility::Hidden,
+        SpriteMaterial(highlight_material),
     ));
 
     commands.insert_resource(OrganismSprites {
@@ -450,5 +504,51 @@ fn interpolate_character_transform(
             }
             .extend(z);
         }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn sync_selection_highlight(
+    inspected: Option<Res<InspectedCharacter>>,
+    mut characters: Query<
+        (&mut Transform, Has<Herbivore>),
+        (CharacterFilter, Without<SelectionHighlight>),
+    >,
+    highlight_query: Single<(&mut Transform, &mut Visibility), With<SelectionHighlight>>,
+    mut prev_inspected: Local<Option<Entity>>,
+) {
+    let selected = inspected.and_then(|i| i.0);
+
+    // Restore Z of previously inspected character if selection changed
+    if *prev_inspected != selected {
+        if let Some(prev_entity) = *prev_inspected
+            && let Ok((mut prev_transform, is_herbivore)) = characters.get_mut(prev_entity)
+        {
+            prev_transform.translation.z = if is_herbivore {
+                Herbivore::Z
+            } else {
+                Predator::Z
+            };
+        }
+        *prev_inspected = selected;
+    }
+
+    let (mut highlight_transform, mut highlight_vis) = highlight_query.into_inner();
+
+    if let Some(entity) = selected
+        && let Ok((mut char_transform, _)) = characters.get_mut(entity)
+    {
+        if char_transform.translation.z != INSPECTED_CHARACTER_Z {
+            char_transform.translation.z = INSPECTED_CHARACTER_Z;
+        }
+        highlight_transform.translation = char_transform
+            .translation
+            .truncate()
+            .extend(SELECTION_HIGHLIGHT_Z);
+        if *highlight_vis != Visibility::Inherited {
+            *highlight_vis = Visibility::Inherited;
+        }
+    } else if *highlight_vis != Visibility::Hidden {
+        *highlight_vis = Visibility::Hidden;
     }
 }
