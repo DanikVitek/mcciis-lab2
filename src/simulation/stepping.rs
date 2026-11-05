@@ -1,13 +1,31 @@
 use bevy::ecs::entity::EntityHashSet;
 use bevy::prelude::*;
 
-use crate::grid::{Facing, GridPosition, GridSize};
-
+use super::brain::{
+    Action,
+    Brain,
+    SensorOffsets,
+    sense_brain_inputs,
+};
+use super::organism::{
+    Age,
+    Energy,
+    EntityKind,
+    Herbivore,
+    MaxEnergy,
+    Plant,
+    Predator,
+    ValueAsFood,
+};
+use super::spatial::SpatialGrid;
 use super::{
-    SimulationSystems, SimulationTick,
-    brain::{Action, Brain, SensorOffsets, sense_brain_inputs},
-    organism::{Age, Energy, EntityKind, Herbivore, MaxEnergy, Plant, Predator, ValueAsFood},
-    spatial::SpatialGrid,
+    SimulationSystems,
+    SimulationTick,
+};
+use crate::grid::{
+    Facing,
+    GridPosition,
+    GridSize,
 };
 
 pub(super) struct SteppingPlugin;

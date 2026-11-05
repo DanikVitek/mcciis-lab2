@@ -1,39 +1,69 @@
 use std::time::Duration;
 
-use bevy::{
-    ecs::system::RunSystemOnce,
-    input::{
-        ButtonState, InputPlugin,
-        keyboard::{Key, KeyboardInput},
-    },
-    prelude::*,
-    state::app::StatesPlugin,
-    window::{ExitCondition, WindowPlugin},
+use bevy::ecs::system::RunSystemOnce;
+use bevy::input::keyboard::{
+    Key,
+    KeyboardInput,
 };
-use life_sim::{
-    grid::{GridPosition, GridSize},
-    presentation::{
-        AppState, PresentationPlugin, SimulationPlaybackState, SimulationSpeedMode,
-        sprites::{
-            GridBackground, GridRootEntity, GridVisualRoot, PreviousPose, SelectionHighlight,
-            TILE_SIZE, grid_origin_offset, grid_to_local_xy,
-        },
-        ui::{
-            HistoryPlotOpen,
-            config::SimConfig,
-            inspector::{
-                BrainInspectorUiPlugin, CharacterInspector, InspectedCharacter,
-                follow_random_character,
-            },
-        },
-    },
-    simulation::{
-        DeferredReproductionPlugin, DeferredSimulationPlugin, DistributionConfig,
-        HistoryRecorderPlugin, MutationStrategy, ReproductionPlugin, ReproductionThreshold,
-        SimulationHistory, SimulationPlugin, SimulationTickCount,
-        organism::{CharacterFilter, Energy, Herbivore, InitialEnergy, MaxEnergy, Plant, Predator},
-        spatial::SpatialGrid,
-    },
+use bevy::input::{
+    ButtonState,
+    InputPlugin,
+};
+use bevy::prelude::*;
+use bevy::state::app::StatesPlugin;
+use bevy::window::{
+    ExitCondition,
+    WindowPlugin,
+};
+use life_sim::grid::{
+    GridPosition,
+    GridSize,
+};
+use life_sim::presentation::sprites::{
+    GridBackground,
+    GridRootEntity,
+    GridVisualRoot,
+    PreviousPose,
+    SelectionHighlight,
+    TILE_SIZE,
+    grid_origin_offset,
+    grid_to_local_xy,
+};
+use life_sim::presentation::ui::HistoryPlotOpen;
+use life_sim::presentation::ui::config::SimConfig;
+use life_sim::presentation::ui::inspector::{
+    BrainInspectorUiPlugin,
+    CharacterInspector,
+    InspectedCharacter,
+    follow_random_character,
+};
+use life_sim::presentation::{
+    AppState,
+    PresentationPlugin,
+    SimulationPlaybackState,
+    SimulationSpeedMode,
+};
+use life_sim::simulation::organism::{
+    CharacterFilter,
+    Energy,
+    Herbivore,
+    InitialEnergy,
+    MaxEnergy,
+    Plant,
+    Predator,
+};
+use life_sim::simulation::spatial::SpatialGrid;
+use life_sim::simulation::{
+    DeferredReproductionPlugin,
+    DeferredSimulationPlugin,
+    DistributionConfig,
+    HistoryRecorderPlugin,
+    MutationStrategy,
+    ReproductionPlugin,
+    ReproductionThreshold,
+    SimulationHistory,
+    SimulationPlugin,
+    SimulationTickCount,
 };
 
 /// Builds a headless Bevy [`App`] with the full [`PresentationPlugin`] (`SimulationPacingPlugin`,

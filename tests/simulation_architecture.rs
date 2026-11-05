@@ -1,19 +1,39 @@
 use core::num::NonZeroU64;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::sync::Arc;
+use std::sync::atomic::{
+    AtomicU64,
+    Ordering,
 };
 
 use bevy::prelude::*;
-use life_sim::{
-    grid::{GridPosition, GridSize},
-    simulation::{
-        DistributionConfig, HeadlessRunnerPlugin, HistoryRecorderPlugin, ReproductionPlugin,
-        ResetSimulation, SampleRate, SimulationHistory, SimulationPlugin, SimulationSystems,
-        SimulationTick, SimulationTickCount, StepSimulationOnce, WorldSeeded,
-        organism::{EntityKind, Herbivore, Plant, Predator},
-        spatial::{CellCounts, SpatialGrid},
-    },
+use life_sim::grid::{
+    GridPosition,
+    GridSize,
+};
+use life_sim::simulation::organism::{
+    EntityKind,
+    Herbivore,
+    Plant,
+    Predator,
+};
+use life_sim::simulation::spatial::{
+    CellCounts,
+    SpatialGrid,
+};
+use life_sim::simulation::{
+    DistributionConfig,
+    HeadlessRunnerPlugin,
+    HistoryRecorderPlugin,
+    ReproductionPlugin,
+    ResetSimulation,
+    SampleRate,
+    SimulationHistory,
+    SimulationPlugin,
+    SimulationSystems,
+    SimulationTick,
+    SimulationTickCount,
+    StepSimulationOnce,
+    WorldSeeded,
 };
 
 /// Deterministic mock replacement for [`SimulationPlugin`] used to test [`HistoryRecorderPlugin`]

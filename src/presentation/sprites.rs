@@ -1,17 +1,28 @@
+use bevy::curve::easing;
+use bevy::ecs::query::QueryFilter;
 use bevy::prelude::*;
-use bevy::{curve::easing, ecs::query::QueryFilter, render::render_resource::AsBindGroup};
+use bevy::render::render_resource::AsBindGroup;
 
-use crate::{
-    grid::{Facing, GridPosition, GridSize},
-    simulation::{
-        SimulationSystems, SimulationTick, WorldSeeded,
-        organism::{CharacterFilter, Herbivore, Plant, Predator},
-    },
+use super::pacing::{
+    AppState,
+    SimulationSpeedMode,
 };
-
-use super::{
-    pacing::{AppState, SimulationSpeedMode},
-    ui::inspector::InspectedCharacter,
+use super::ui::inspector::InspectedCharacter;
+use crate::grid::{
+    Facing,
+    GridPosition,
+    GridSize,
+};
+use crate::simulation::organism::{
+    CharacterFilter,
+    Herbivore,
+    Plant,
+    Predator,
+};
+use crate::simulation::{
+    SimulationSystems,
+    SimulationTick,
+    WorldSeeded,
 };
 
 pub const TILE_SIZE: Vec2 = Vec2::splat(32.0);

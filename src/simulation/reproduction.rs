@@ -1,16 +1,33 @@
-use core::{any::Any, fmt};
+use core::any::Any;
+use core::fmt;
 
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
-use rand::{RngExt, seq::IndexedRandom};
+use rand::RngExt;
+use rand::seq::IndexedRandom;
 
-use crate::grid::{Facing, GridPosition, GridSize};
-
+use super::brain::{
+    Brain,
+    INPUTS,
+    OUTPUTS,
+};
+use super::organism::{
+    Energy,
+    EntityKind,
+    Generation,
+    Herbivore,
+    MaxEnergy,
+    Predator,
+};
+use super::spatial::SpatialGrid;
 use super::{
-    SimulationSystems, SimulationTick,
-    brain::{Brain, INPUTS, OUTPUTS},
-    organism::{Energy, EntityKind, Generation, Herbivore, MaxEnergy, Predator},
-    spatial::SpatialGrid,
+    SimulationSystems,
+    SimulationTick,
+};
+use crate::grid::{
+    Facing,
+    GridPosition,
+    GridSize,
 };
 
 pub trait Mutation: fmt::Debug + Any + Sync + Send {

@@ -1,28 +1,48 @@
 use core::num::NonZeroU64;
 use std::time::Duration;
 
-use bevy::{ecs::system::SystemParam, prelude::*};
+use bevy::ecs::system::SystemParam;
+use bevy::prelude::*;
+use bevy_egui::egui::emath::Numeric;
+use bevy_egui::egui::{
+    self,
+};
 use bevy_egui::{
-    EguiContexts, EguiPrimaryContextPass,
-    egui::{self, emath::Numeric},
+    EguiContexts,
+    EguiPrimaryContextPass,
 };
 
-use crate::{
-    grid::GridSize,
-    presentation::pacing::{AppState, SimulationPlaybackState, SimulationSpeedMode},
-    simulation::{
-        DistributedMutation, DistributionConfig, DistributionError, MutationStrategy,
-        ReproductionThreshold, ResetSimulation, SimulationTickCount, SingleNeuronMutation,
-        StepSimulationOnce,
-        history::SampleRate,
-        organism::{Energy, InitialEnergy, MaxEnergy},
-        spatial::SpatialGrid,
-    },
+use super::inspector::{
+    CharacterInspector,
+    InspectedCharacter,
 };
-
 use super::{
-    HistoryPlotOpen, VIEWPORT_MARGIN,
-    inspector::{CharacterInspector, InspectedCharacter},
+    HistoryPlotOpen,
+    VIEWPORT_MARGIN,
+};
+use crate::grid::GridSize;
+use crate::presentation::pacing::{
+    AppState,
+    SimulationPlaybackState,
+    SimulationSpeedMode,
+};
+use crate::simulation::history::SampleRate;
+use crate::simulation::organism::{
+    Energy,
+    InitialEnergy,
+    MaxEnergy,
+};
+use crate::simulation::spatial::SpatialGrid;
+use crate::simulation::{
+    DistributedMutation,
+    DistributionConfig,
+    DistributionError,
+    MutationStrategy,
+    ReproductionThreshold,
+    ResetSimulation,
+    SimulationTickCount,
+    SingleNeuronMutation,
+    StepSimulationOnce,
 };
 
 /// Staged form state edited by the configuration UI before applying changes to live resources.

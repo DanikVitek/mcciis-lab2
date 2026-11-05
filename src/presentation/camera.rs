@@ -1,19 +1,27 @@
+use bevy::input::mouse::{
+    AccumulatedMouseMotion,
+    MouseScrollUnit,
+    MouseWheel,
+};
 use bevy::prelude::*;
-use bevy::{
-    input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel},
-    window::PrimaryWindow,
-};
-use bevy_egui::input::{EguiWantsInput, egui_wants_any_pointer_input};
-
-use crate::{
-    grid::GridSize,
-    simulation::organism::{Herbivore, Predator},
+use bevy::window::PrimaryWindow;
+use bevy_egui::input::{
+    EguiWantsInput,
+    egui_wants_any_pointer_input,
 };
 
-use super::{
-    pacing::AppState,
-    sprites::{SpriteTransformSystems, TILE_SIZE, WATER_DARK_COLOR, grid_origin_offset},
-    ui::inspector::InspectedCharacter,
+use super::pacing::AppState;
+use super::sprites::{
+    SpriteTransformSystems,
+    TILE_SIZE,
+    WATER_DARK_COLOR,
+    grid_origin_offset,
+};
+use super::ui::inspector::InspectedCharacter;
+use crate::grid::GridSize;
+use crate::simulation::organism::{
+    Herbivore,
+    Predator,
 };
 
 const BACKGROUND_COLOR: Color = WATER_DARK_COLOR;

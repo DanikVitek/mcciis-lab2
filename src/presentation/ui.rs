@@ -3,18 +3,29 @@ pub mod inspector;
 pub mod plot;
 
 use bevy::prelude::*;
+use bevy_egui::input::egui_wants_any_keyboard_input;
 use bevy_egui::{
-    EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui, input::egui_wants_any_keyboard_input,
+    EguiContexts,
+    EguiPlugin,
+    EguiPrimaryContextPass,
+    egui,
 };
 
+use self::config::{
+    SimConfigUiPlugin,
+    toggle_playback_pause,
+    trigger_single_step,
+};
+use self::inspector::{
+    BrainInspectorUiPlugin,
+    InspectedCharacter,
+};
+use self::plot::HistoryPlotUiPlugin;
+use super::pacing::{
+    AppState,
+    SimulationPlaybackState,
+};
 use crate::simulation::organism::CharacterFilter;
-
-use self::{
-    config::{SimConfigUiPlugin, toggle_playback_pause, trigger_single_step},
-    inspector::{BrainInspectorUiPlugin, InspectedCharacter},
-    plot::HistoryPlotUiPlugin,
-};
-use super::pacing::{AppState, SimulationPlaybackState};
 
 /// Minimum margin separating all floating UI panels from the viewport edges.
 pub const VIEWPORT_MARGIN: f32 = 16.0;

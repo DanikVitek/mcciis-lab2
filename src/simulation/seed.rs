@@ -1,18 +1,29 @@
 use bevy::prelude::*;
 use bon::bon;
 use itertools::Itertools;
-use rand::{RngExt, distr::Distribution, seq::WeightError};
+use rand::RngExt;
+use rand::distr::Distribution;
+use rand::seq::WeightError;
 
-use crate::{
-    grid::{Facing, GridPosition, GridSize},
-    simulation::organism::Energy,
+use super::organism::{
+    EntityKind,
+    Herbivore,
+    InitialEnergy,
+    Plant,
+    Predator,
 };
-
+use super::spatial::SpatialGrid;
 use super::{
-    ResetSimulation, SimulationTickCount, WorldSeeded,
-    organism::{EntityKind, Herbivore, InitialEnergy, Plant, Predator},
-    spatial::SpatialGrid,
+    ResetSimulation,
+    SimulationTickCount,
+    WorldSeeded,
 };
+use crate::grid::{
+    Facing,
+    GridPosition,
+    GridSize,
+};
+use crate::simulation::organism::Energy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Resource)]
 pub struct DistributionConfig {

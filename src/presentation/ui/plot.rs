@@ -2,19 +2,31 @@ use core::num::NonZeroU64;
 use std::collections::BTreeSet;
 
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use egui_plot::{Corner, Legend, Line, Plot, PlotPoints};
-
-use crate::{
-    presentation::pacing::AppState,
-    simulation::{
-        SimulationTickCount,
-        history::{GenerationSample, SampleRate, SimulationHistory},
-        spatial::SpatialGrid,
-    },
+use bevy_egui::{
+    EguiContexts,
+    EguiPrimaryContextPass,
+    egui,
+};
+use egui_plot::{
+    Corner,
+    Legend,
+    Line,
+    Plot,
+    PlotPoints,
 };
 
-use super::{HistoryPlotOpen, VIEWPORT_MARGIN};
+use super::{
+    HistoryPlotOpen,
+    VIEWPORT_MARGIN,
+};
+use crate::presentation::pacing::AppState;
+use crate::simulation::SimulationTickCount;
+use crate::simulation::history::{
+    GenerationSample,
+    SampleRate,
+    SimulationHistory,
+};
+use crate::simulation::spatial::SpatialGrid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HistoryPlotTab {

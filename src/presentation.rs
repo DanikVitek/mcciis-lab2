@@ -7,12 +7,20 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
-pub use self::pacing::{AppState, SimulationPlaybackState, SimulationSpeedMode};
-use self::{
-    camera::{CameraPlugin, CameraSystems},
-    pacing::SimulationPacingPlugin,
-    sprites::SpritesPlugin,
-    ui::{UiPlugin, UiSystems},
+use self::camera::{
+    CameraPlugin,
+    CameraSystems,
+};
+use self::pacing::SimulationPacingPlugin;
+pub use self::pacing::{
+    AppState,
+    SimulationPlaybackState,
+    SimulationSpeedMode,
+};
+use self::sprites::SpritesPlugin;
+use self::ui::{
+    UiPlugin,
+    UiSystems,
 };
 
 /// Top-level presentation plugin bundling visual pacing, sprites, camera controls, and UI.

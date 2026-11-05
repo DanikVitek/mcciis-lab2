@@ -1,12 +1,23 @@
-use core::{iter::FusedIterator, num::NonZeroU64, slice};
+use core::iter::FusedIterator;
+use core::num::NonZeroU64;
+use core::slice;
 use std::collections::BTreeMap;
 
 use bevy::prelude::*;
 
+use super::organism::{
+    CharacterFilter,
+    Generation,
+};
+use super::spatial::{
+    CellCounts,
+    SpatialGrid,
+};
 use super::{
-    SimulationSystems, SimulationTick, SimulationTickCount, WorldSeeded,
-    organism::{CharacterFilter, Generation},
-    spatial::{CellCounts, SpatialGrid},
+    SimulationSystems,
+    SimulationTick,
+    SimulationTickCount,
+    WorldSeeded,
 };
 
 /// Generation statistics at a discrete sample tick.

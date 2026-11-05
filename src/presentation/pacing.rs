@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
-use crate::simulation::{SimulationTick, has_living_organisms};
+use crate::simulation::{
+    SimulationTick,
+    has_living_organisms,
+};
 
 /// Top-level visual application phase.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, States)]

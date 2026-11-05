@@ -1,30 +1,55 @@
 use core::fmt;
 
-use bevy::{ecs::system::SystemParam, math::I16Vec2, prelude::*, window::PrimaryWindow};
+use bevy::ecs::system::SystemParam;
+use bevy::math::I16Vec2;
+use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
+use bevy_egui::input::{
+    EguiWantsInput,
+    egui_wants_any_pointer_input,
+};
 use bevy_egui::{
-    EguiContexts, EguiPrimaryContextPass, egui,
-    input::{EguiWantsInput, egui_wants_any_pointer_input},
+    EguiContexts,
+    EguiPrimaryContextPass,
+    egui,
 };
 use rand::seq::IteratorRandom;
 
-use crate::{
-    grid::{Facing, GridPosition, GridSize},
-    presentation::{pacing::AppState, sprites::world_to_grid_pos},
-    simulation::{
-        ReproductionThreshold,
-        brain::{
-            Action, Brain, BrainInputs, BrainOutputs, INPUTS, OUTPUTS, SensorOffsets,
-            sense_brain_inputs,
-        },
-        organism::{
-            Age, CharacterFilter, Energy, EntityKind, Generation, Herbivore, MaxEnergy, Predator,
-            ValueAsFood,
-        },
-        spatial::SpatialGrid,
-    },
+use super::{
+    HistoryPlotOpen,
+    UiSystems,
+    VIEWPORT_MARGIN,
 };
-
-use super::{HistoryPlotOpen, UiSystems, VIEWPORT_MARGIN};
+use crate::grid::{
+    Facing,
+    GridPosition,
+    GridSize,
+};
+use crate::presentation::pacing::AppState;
+use crate::presentation::sprites::world_to_grid_pos;
+use crate::simulation::ReproductionThreshold;
+use crate::simulation::brain::{
+    Action,
+    Brain,
+    BrainInputs,
+    BrainOutputs,
+    INPUTS,
+    OUTPUTS,
+    SensorOffsets,
+    sense_brain_inputs,
+};
+use crate::simulation::organism::{
+    Age,
+    CharacterFilter,
+    Energy,
+    EntityKind,
+    Generation,
+    Herbivore,
+    MaxEnergy,
+    Predator,
+    ValueAsFood,
+};
+use crate::simulation::spatial::SpatialGrid;
 
 const MAX_CLICK_DRAG_DISTANCE_PX: f32 = 5.0;
 const INSPECTOR_PANEL_WIDTH: f32 = 350.0;

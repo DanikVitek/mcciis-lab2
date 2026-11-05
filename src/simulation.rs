@@ -10,21 +10,34 @@ use bevy::app::AppExit;
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 
-use crate::grid::GridSize;
-
 pub use self::history::{
-    GenerationSample, HistoryRecorderPlugin, HistorySample, SampleRate, SimulationHistory,
+    GenerationSample,
+    HistoryRecorderPlugin,
+    HistorySample,
+    SampleRate,
+    SimulationHistory,
+};
+use self::organism::{
+    CharacterFilter,
+    InitialEnergy,
+    MaxEnergy,
 };
 pub use self::reproduction::{
-    DeferredReproductionPlugin, DistributedMutation, Mutation, MutationStrategy,
-    ReproductionPlugin, ReproductionThreshold, SingleNeuronMutation,
+    DeferredReproductionPlugin,
+    DistributedMutation,
+    Mutation,
+    MutationStrategy,
+    ReproductionPlugin,
+    ReproductionThreshold,
+    SingleNeuronMutation,
 };
-pub use self::seed::{DistributionConfig, DistributionError};
-use self::{
-    organism::{CharacterFilter, InitialEnergy, MaxEnergy},
-    spatial::SpatialGrid,
-    stepping::SteppingPlugin,
+pub use self::seed::{
+    DistributionConfig,
+    DistributionError,
 };
+use self::spatial::SpatialGrid;
+use self::stepping::SteppingPlugin;
+use crate::grid::GridSize;
 
 /// Run condition returning `true` while at least one character organism (`Herbivore` or `Predator`) is alive.
 pub fn has_living_organisms(organisms: Query<(), CharacterFilter>) -> bool {

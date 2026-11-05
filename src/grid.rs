@@ -1,11 +1,21 @@
-use core::f32::consts::{FRAC_PI_2, PI};
+use core::f32::consts::{
+    FRAC_PI_2,
+    PI,
+};
 
-use bevy::math::{I16Vec2, U16Vec2};
+use bevy::math::{
+    I16Vec2,
+    U16Vec2,
+};
 use bevy::prelude::*;
 use nalgebra::Complex;
+use rand::distr::{
+    Distribution,
+    StandardUniform,
+};
 use rand::{
-    Rng, RngExt,
-    distr::{Distribution, StandardUniform},
+    Rng,
+    RngExt,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component, Deref, DerefMut)]

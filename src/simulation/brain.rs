@@ -1,15 +1,26 @@
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
 use itertools::Itertools;
-use nalgebra::{ArrayStorage, Const, ReshapableStorage, SMatrix, SVector};
-use rand::{
-    Rng,
-    distr::{Distribution, StandardUniform, Uniform},
+use nalgebra::{
+    ArrayStorage,
+    Const,
+    ReshapableStorage,
+    SMatrix,
+    SVector,
+};
+use rand::Rng;
+use rand::distr::{
+    Distribution,
+    StandardUniform,
+    Uniform,
 };
 
-use crate::grid::{Facing, GridPosition};
-
-use super::{organism::EntityKind, spatial::SpatialGrid};
+use super::organism::EntityKind;
+use super::spatial::SpatialGrid;
+use crate::grid::{
+    Facing,
+    GridPosition,
+};
 
 /// Base offsets for the sensors, as if the agent is [facing](Facing) [North](Facing::North)
 #[derive(Debug, Component)]

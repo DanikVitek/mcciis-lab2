@@ -1,25 +1,54 @@
-use core::{iter, num::NonZeroU64};
-use std::{
-    fs::{self, File},
-    io::{self, BufWriter, Write},
-    path::{Path, PathBuf},
-    time::{Duration, Instant},
+use core::iter;
+use core::num::NonZeroU64;
+use std::fs::{
+    self,
+    File,
+};
+use std::io::{
+    self,
+    BufWriter,
+    Write,
+};
+use std::path::{
+    Path,
+    PathBuf,
+};
+use std::time::{
+    Duration,
+    Instant,
 };
 
 use bevy::prelude::*;
-use clap::{Args, Parser, Subcommand};
+use clap::{
+    Args,
+    Parser,
+    Subcommand,
+};
 use itertools::iproduct;
-use life_sim::{
-    grid::GridSize,
-    presentation::{PresentationPlugin, pacing::SimulationSpeedMode, ui::config::SimConfig},
-    simulation::{
-        DeferredReproductionPlugin, DeferredSimulationPlugin, DistributedMutation,
-        DistributionConfig, HistoryRecorderPlugin, MutationStrategy, ReproductionPlugin,
-        ReproductionThreshold, SimulationHistory, SimulationPlugin, SimulationTick,
-        SimulationTickCount, SingleNeuronMutation,
-        organism::{Energy, InitialEnergy, MaxEnergy},
-        spatial::SpatialGrid,
-    },
+use life_sim::grid::GridSize;
+use life_sim::presentation::PresentationPlugin;
+use life_sim::presentation::pacing::SimulationSpeedMode;
+use life_sim::presentation::ui::config::SimConfig;
+use life_sim::simulation::organism::{
+    Energy,
+    InitialEnergy,
+    MaxEnergy,
+};
+use life_sim::simulation::spatial::SpatialGrid;
+use life_sim::simulation::{
+    DeferredReproductionPlugin,
+    DeferredSimulationPlugin,
+    DistributedMutation,
+    DistributionConfig,
+    HistoryRecorderPlugin,
+    MutationStrategy,
+    ReproductionPlugin,
+    ReproductionThreshold,
+    SimulationHistory,
+    SimulationPlugin,
+    SimulationTick,
+    SimulationTickCount,
+    SingleNeuronMutation,
 };
 
 #[derive(Debug, Parser)]

@@ -1,14 +1,19 @@
-use core::{
-    iter::Sum,
-    ops::{AddAssign, Index, IndexMut},
+use core::iter::Sum;
+use core::ops::{
+    AddAssign,
+    Index,
+    IndexMut,
 };
 
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
 
-use crate::grid::{Facing, GridPosition, GridSize};
-
 use super::organism::EntityKind;
+use crate::grid::{
+    Facing,
+    GridPosition,
+    GridSize,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Resource)]
 pub struct CharacterCounts {
