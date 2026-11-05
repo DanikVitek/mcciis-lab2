@@ -9,7 +9,7 @@ use crate::{
     },
 };
 
-use super::pacing::SimulationSpeedMode;
+use super::pacing::{AppState, SimulationSpeedMode};
 
 pub const TILE_SIZE: Vec2 = Vec2::splat(32.0);
 
@@ -198,12 +198,14 @@ impl Plugin for SpritesPlugin {
                 update_step_transition.run_if(resource_equals(SimulationSpeedMode::FixedStep)),
                 set_step_transitioned.run_if(resource_equals(SimulationSpeedMode::Uncapped)),
             )
+                .run_if(in_state(AppState::Simulation))
                 .run_if(|it: Res<StepTransition>| it.progress < 1.0),
         )
         .add_systems(
             PostUpdate,
             (
-                sync_grid_root_centering.run_if(resource_changed::<GridSize>),
+                sync_grid_root_centering
+                    .run_if(in_state(AppState::Simulation).and_then(resource_changed::<GridSize>)),
                 sync_translation_with_grid::<With<Plant>>
                     .run_if(resource_equals(SimulationSpeedMode::FixedStep)),
                 interpolate_character_transform.run_if(resource_changed::<StepTransition>),
@@ -212,6 +214,7 @@ impl Plugin for SpritesPlugin {
                     .run_if(resource_equals(SimulationSpeedMode::Uncapped)),
             )
                 .chain_weak()
+                .run_if(in_state(AppState::Simulation))
                 .before(TransformSystems::Propagate),
         )
         .init_resource::<StepTransition>();
@@ -220,15 +223,16 @@ impl Plugin for SpritesPlugin {
 
 fn setup_visual_root_and_sprites(
     mut commands: Commands,
-    field_size: Res<GridSize>,
     asset_server: Res<AssetServer>,
     mut shaders: ResMut<Assets<PaletteSwapMaterial>>,
     mut bg_materials: ResMut<Assets<GridBackgroundMaterial>>,
 ) {
+    let placeholder_size = GridSize::default();
+
     let root = commands
         .spawn((
             GridVisualRoot,
-            Transform::from_translation(grid_origin_offset(*field_size).extend(0.0)),
+            Transform::from_translation(grid_origin_offset(placeholder_size).extend(0.0)),
         ))
         .id();
 
@@ -237,16 +241,17 @@ fn setup_visual_root_and_sprites(
     let bg_material = bg_materials.add(GridBackgroundMaterial {
         cell_color: LinearRgba::from(WATER_CELL_COLOR),
         border_color: LinearRgba::from(WATER_DARK_COLOR),
-        grid_size: field_size.as_vec2(),
+        grid_size: placeholder_size.as_vec2(),
     });
 
     commands.spawn((
         GridBackground,
         Sprite {
-            custom_size: Some(field_size.as_vec2() * TILE_SIZE),
+            custom_size: Some(placeholder_size.as_vec2() * TILE_SIZE),
             ..default()
         },
         Transform::from_xyz(0.0, 0.0, GRID_BACKGROUND_Z),
+        Visibility::Hidden,
         SpriteMaterial(bg_material),
     ));
 
@@ -362,15 +367,24 @@ fn update_step_transition(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn sync_grid_root_centering(
     field_size: Res<GridSize>,
     mut root_transform: Single<&mut Transform, With<GridVisualRoot>>,
-    bg_query: Single<(&mut Sprite, &SpriteMaterial<GridBackgroundMaterial>), With<GridBackground>>,
+    bg_query: Single<
+        (
+            &mut Sprite,
+            &mut Visibility,
+            &SpriteMaterial<GridBackgroundMaterial>,
+        ),
+        With<GridBackground>,
+    >,
     mut bg_materials: ResMut<Assets<GridBackgroundMaterial>>,
 ) {
     root_transform.translation = grid_origin_offset(*field_size).extend(0.0);
 
-    let (mut bg_sprite, bg_mat_handle) = bg_query.into_inner();
+    let (mut bg_sprite, mut bg_vis, bg_mat_handle) = bg_query.into_inner();
+    *bg_vis = Visibility::Inherited;
     bg_sprite.custom_size = Some(field_size.as_vec2() * TILE_SIZE);
     if let Some(mut mat) = bg_materials.get_mut(&bg_mat_handle.0) {
         mat.grid_size = field_size.as_vec2();

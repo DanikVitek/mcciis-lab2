@@ -5,10 +5,13 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use egui_plot::{Corner, Legend, Line, Plot, PlotPoints};
 
-use crate::simulation::{
-    SimulationTickCount,
-    history::{GenerationSample, SampleRate, SimulationHistory},
-    spatial::SpatialGrid,
+use crate::{
+    presentation::pacing::AppState,
+    simulation::{
+        SimulationTickCount,
+        history::{GenerationSample, SampleRate, SimulationHistory},
+        spatial::SpatialGrid,
+    },
 };
 
 use super::{HistoryPlotOpen, VIEWPORT_MARGIN};
@@ -24,7 +27,10 @@ pub struct HistoryPlotUiPlugin;
 
 impl Plugin for HistoryPlotUiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(EguiPrimaryContextPass, render_history_plot_ui);
+        app.add_systems(
+            EguiPrimaryContextPass,
+            render_history_plot_ui.run_if(in_state(AppState::Simulation)),
+        );
     }
 }
 

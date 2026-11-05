@@ -55,6 +55,12 @@ pub struct Energy(u8);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Resource)]
 pub struct InitialEnergy(pub u8);
 
+impl Default for InitialEnergy {
+    fn default() -> Self {
+        Self(5)
+    }
+}
+
 impl From<u8> for InitialEnergy {
     fn from(value: u8) -> Self {
         Self(value)
@@ -75,6 +81,12 @@ impl fmt::Display for InitialEnergy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Resource)]
 pub struct MaxEnergy(pub u8);
+
+impl Default for MaxEnergy {
+    fn default() -> Self {
+        Self(10)
+    }
+}
 
 impl From<u8> for MaxEnergy {
     fn from(value: u8) -> Self {

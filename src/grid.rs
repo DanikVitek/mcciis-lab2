@@ -13,6 +13,7 @@ use rand::{
 pub struct GridPosition(pub U16Vec2);
 
 impl GridPosition {
+    #[must_use]
     pub const fn new(x: u16, y: u16) -> Self {
         Self(U16Vec2 { x, y })
     }
@@ -51,14 +52,9 @@ impl GridPosition {
     }
 
     #[must_use]
-    pub fn add_wrapping_rotated(self, offset: I16Vec2, facing: Facing, bounds: GridSize) -> Self {
-        let rotated_offset = facing.rotate_offset(offset);
-        let raw = self.as_ivec2() + rotated_offset.as_ivec2();
-        let wrapped = U16Vec2::new(
-            raw.x.rem_euclid(i32::from(bounds.x)) as u16,
-            raw.y.rem_euclid(i32::from(bounds.y)) as u16,
-        );
-        Self(wrapped)
+    pub fn add_wrapping_rotated(self, offset: I16Vec2, dir: Facing, bounds: GridSize) -> Self {
+        let rotated_offset = dir.rotate_offset(offset);
+        self.add_wrapping(rotated_offset, bounds)
     }
 
     #[must_use]
@@ -74,6 +70,12 @@ impl GridPosition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource, Deref, DerefMut)]
 pub struct GridSize(pub U16Vec2);
+
+impl Default for GridSize {
+    fn default() -> Self {
+        Self::new(100, 100)
+    }
+}
 
 impl GridSize {
     pub const fn new(width: u16, height: u16) -> Self {

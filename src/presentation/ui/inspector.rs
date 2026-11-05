@@ -6,7 +6,7 @@ use bevy_egui::{
 
 use crate::{
     grid::{Facing, GridPosition, GridSize},
-    presentation::sprites::world_to_grid_pos,
+    presentation::{pacing::AppState, sprites::world_to_grid_pos},
     simulation::{
         brain::{
             Action, Brain, BrainInputs, BrainOutputs, INPUTS, OUTPUTS, SensorOffsets,
@@ -145,7 +145,9 @@ impl Plugin for BrainInspectorUiPlugin {
             )
             .add_systems(
                 EguiPrimaryContextPass,
-                render_inspector_panels.run_if(resource_equals(HistoryPlotOpen(false))),
+                render_inspector_panels
+                    .run_if(in_state(AppState::Simulation))
+                    .run_if(resource_equals(HistoryPlotOpen(false))),
             );
     }
 }

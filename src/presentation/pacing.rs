@@ -4,8 +4,20 @@ use bevy::prelude::*;
 
 use crate::simulation::{SimulationTick, has_living_organisms};
 
-/// Visual playback state controlling whether [`SimulationTick`] advances automatically.
+/// Top-level visual application phase.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, States)]
+pub enum AppState {
+    /// Initial pre-run setup screen where simulation [`Resource`]s have not yet been inserted.
+    #[default]
+    Setup,
+    /// Active simulation phase after initial configuration has been accepted and [`Resource`]s exist.
+    Simulation,
+}
+
+/// Visual playback sub-state active only during [`AppState::Simulation`], controlling whether
+/// [`SimulationTick`] advances automatically or is paused.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, SubStates)]
+#[source(AppState = AppState::Simulation)]
 pub enum SimulationPlaybackState {
     #[default]
     Running,
@@ -22,7 +34,7 @@ pub enum SimulationSpeedMode {
     Uncapped,
 }
 
-/// Drives [`SimulationTick`] according to [`SimulationPlaybackState`] and [`SimulationSpeedMode`].
+/// Drives [`SimulationTick`] according to [`AppState`], [`SimulationPlaybackState`], and [`SimulationSpeedMode`].
 pub struct SimulationPacingPlugin {
     pub initial_tick_interval: Duration,
 }
@@ -44,7 +56,8 @@ impl Default for SimulationPacingPlugin {
 impl Plugin for SimulationPacingPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Time::<Fixed>::from_duration(self.initial_tick_interval))
-            .init_state::<SimulationPlaybackState>()
+            .init_state::<AppState>()
+            .add_sub_state::<SimulationPlaybackState>()
             .init_resource::<SimulationSpeedMode>()
             .add_systems(
                 FixedUpdate,

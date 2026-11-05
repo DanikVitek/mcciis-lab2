@@ -14,7 +14,7 @@ use self::{
     inspector::{BrainInspectorUiPlugin, InspectedCharacter},
     plot::HistoryPlotUiPlugin,
 };
-use super::pacing::SimulationPlaybackState;
+use super::pacing::{AppState, SimulationPlaybackState};
 
 /// Minimum margin separating all floating UI panels from the viewport edges.
 pub const VIEWPORT_MARGIN: f32 = 16.0;
@@ -49,6 +49,7 @@ impl Plugin for UiPlugin {
                 Update,
                 handle_ui_hotkeys
                     .in_set(UiSystems::Config)
+                    .run_if(in_state(AppState::Simulation))
                     .run_if(not(egui_wants_any_keyboard_input)),
             )
             .add_systems(

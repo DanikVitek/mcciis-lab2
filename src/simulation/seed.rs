@@ -21,6 +21,16 @@ pub struct DistributionConfig {
     predators_fraction: f32,
 }
 
+impl Default for DistributionConfig {
+    fn default() -> Self {
+        Self {
+            plants_fraction: 0.1,
+            herbivores_fraction: 0.1,
+            predators_fraction: 0.1,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DistributionError {
     #[error("negative distribution fraction")]

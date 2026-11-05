@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
+pub use self::pacing::{AppState, SimulationPlaybackState, SimulationSpeedMode};
 use self::{
     camera::{CameraPlugin, CameraSystems},
     pacing::SimulationPacingPlugin,
@@ -37,7 +38,12 @@ impl Plugin for PresentationPlugin {
     fn build(&self, app: &mut App) {
         app.configure_sets(
             Update,
-            (UiSystems::Config, UiSystems::Inspector, CameraSystems).chain_weak(),
+            (
+                UiSystems::Config,
+                UiSystems::Inspector.run_if(in_state(AppState::Simulation)),
+                CameraSystems.run_if(in_state(AppState::Simulation)),
+            )
+                .chain_weak(),
         )
         .add_plugins((
             SimulationPacingPlugin::new(self.initial_tick_interval),

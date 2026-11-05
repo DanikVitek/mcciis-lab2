@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::{
+    pacing::AppState,
     sprites::{TILE_SIZE, WATER_DARK_COLOR, grid_origin_offset},
     ui::inspector::InspectedCharacter,
 };
@@ -40,7 +41,9 @@ impl Plugin for CameraPlugin {
             )
             .add_systems(
                 PostUpdate,
-                follow_inspected_character.before(TransformSystems::Propagate),
+                follow_inspected_character
+                    .run_if(in_state(AppState::Simulation))
+                    .before(TransformSystems::Propagate),
             );
     }
 }

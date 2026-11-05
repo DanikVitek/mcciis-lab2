@@ -63,7 +63,43 @@ pub struct ResetSimulation;
 #[derive(Debug, Clone, Copy, Default, Event)]
 pub struct StepSimulationOnce;
 
-/// Schedule-agnostic, headless-ready ecosystem simulation plugin.
+/// Registers the [`SimulationTick`] schedule, system sets, tick systems, and reset/step observers
+/// without inserting configuration resources or seeding the world automatically on `Startup`.
+///
+/// Used directly in visual mode where configuration [`Resource`]s are inserted only after the user
+/// accepts the initial setup screen, and included automatically by [`SimulationPlugin`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeferredSimulationPlugin;
+
+impl Plugin for DeferredSimulationPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_schedule(SimulationTick)
+            .configure_sets(
+                SimulationTick,
+                (
+                    SimulationSystems::Step,
+                    SimulationSystems::Reproduce,
+                    SimulationSystems::Record,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                SimulationTick,
+                (
+                    lifecycle::step_organisms.in_set(SimulationSystems::Step),
+                    lifecycle::reproduction.in_set(SimulationSystems::Reproduce),
+                    advance_tick_counter
+                        .after_ignore_deferred(SimulationSystems::Reproduce)
+                        .before_ignore_deferred(SimulationSystems::Record),
+                ),
+            )
+            .add_observer(seed::on_reset_simulation)
+            .add_observer(on_step_simulation_once);
+    }
+}
+
+/// Schedule-agnostic, headless-ready ecosystem simulation plugin that immediately inserts
+/// all simulation [`Resource`]s and seeds the world on `Startup`.
 #[derive(bon::Builder)]
 pub struct SimulationPlugin {
     pub grid_size: GridSize,
@@ -93,29 +129,8 @@ impl Plugin for SimulationPlugin {
             .insert_resource(self.initial_energy)
             .insert_resource(self.max_energy)
             .init_resource::<SimulationTickCount>()
-            .init_schedule(SimulationTick)
-            .configure_sets(
-                SimulationTick,
-                (
-                    SimulationSystems::Step,
-                    SimulationSystems::Reproduce,
-                    SimulationSystems::Record,
-                )
-                    .chain(),
-            )
-            .add_systems(Startup, seed::seed_world)
-            .add_systems(
-                SimulationTick,
-                (
-                    lifecycle::step_organisms.in_set(SimulationSystems::Step),
-                    lifecycle::reproduction.in_set(SimulationSystems::Reproduce),
-                    advance_tick_counter
-                        .after_ignore_deferred(SimulationSystems::Reproduce)
-                        .before_ignore_deferred(SimulationSystems::Record),
-                ),
-            )
-            .add_observer(seed::on_reset_simulation)
-            .add_observer(on_step_simulation_once);
+            .add_plugins(DeferredSimulationPlugin)
+            .add_systems(Startup, seed::seed_world);
     }
 }
 

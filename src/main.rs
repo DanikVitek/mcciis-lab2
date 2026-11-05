@@ -11,10 +11,10 @@ use clap::{Args, Parser, Subcommand};
 use itertools::iproduct;
 use life_sim::{
     grid::GridSize,
-    presentation::PresentationPlugin,
+    presentation::{PresentationPlugin, pacing::SimulationSpeedMode, ui::config::SimConfig},
     simulation::{
-        DistributedMutation, DistributionConfig, HistoryRecorderPlugin, MutationStrategy,
-        SimulationHistory, SimulationPlugin, SimulationTick, SimulationTickCount,
+        DeferredSimulationPlugin, DistributedMutation, DistributionConfig, HistoryRecorderPlugin,
+        MutationStrategy, SimulationHistory, SimulationPlugin, SimulationTick, SimulationTickCount,
         SingleNeuronMutation,
         organism::{InitialEnergy, MaxEnergy},
         spatial::SpatialGrid,
@@ -196,25 +196,26 @@ fn main() -> io::Result<()> {
 }
 
 fn run_visual(args: VisualArgs) {
-    let distribution = DistributionConfig::builder()
-        .plants_fraction(args.plants)
-        .herbivores_fraction(args.herbivores)
-        .predators_fraction(args.predators)
-        .build()
-        .expect("invalid initial species distribution fractions");
+    let tick_interval = Duration::from_secs_f64(args.tick_interval_secs);
+    let prefilled_config = SimConfig {
+        grid_size: GridSize::new(args.width, args.height),
+        plants_fraction: args.plants,
+        herbivores_fraction: args.herbivores,
+        predators_fraction: args.predators,
+        initial_energy: InitialEnergy(args.initial_energy),
+        max_energy: MaxEnergy(args.max_energy),
+        tick_interval,
+        speed_mode: SimulationSpeedMode::default(),
+        mutation: MutationStrategy::default(),
+    };
 
     App::new()
+        .insert_resource(prefilled_config)
         .add_plugins((
             DefaultPlugins.set(ImagePlugin::default_nearest()),
-            SimulationPlugin::builder()
-                .grid_size(GridSize::new(args.width, args.height))
-                .distribution(distribution)
-                .initial_energy(args.initial_energy)
-                .max_energy(args.max_energy)
-                .mutation_strategy(DistributedMutation::default())
-                .build(),
+            DeferredSimulationPlugin,
             HistoryRecorderPlugin::default(),
-            PresentationPlugin::new(Duration::from_secs_f64(args.tick_interval_secs)),
+            PresentationPlugin::new(tick_interval),
         ))
         .run();
 }
