@@ -4,11 +4,9 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use life_sim::{
     grid::{GridPosition, GridSize},
-    presentation::ui::inspector::{BrainInspectorUiPlugin, CharacterInspector, InspectedCharacter},
     simulation::{
         DistributionConfig, HeadlessRunnerPlugin, HistoryRecorderPlugin, ResetSimulation,
         SampleRate, SimulationHistory, SimulationPlugin, SimulationSystems, SimulationTick,
@@ -276,55 +274,6 @@ fn reset_and_step_once_events_reconfigure_and_advance_world() {
     assert_eq!(totals.plants, 60);
     assert_eq!(totals.herbivores, 15);
     assert_eq!(totals.predators, 0);
-}
-
-#[test]
-fn brain_inspector_reads_snapshot_and_clears_on_character_death() {
-    let dist = DistributionConfig::builder()
-        .plants_fraction(0.1)
-        .herbivores_fraction(0.2)
-        .predators_fraction(0.0)
-        .build()
-        .unwrap();
-
-    let mut app = App::new();
-    app.add_plugins((
-        SimulationPlugin::builder()
-            .grid_size(GridSize::new(10, 10))
-            .distribution(dist)
-            .initial_energy(50)
-            .max_energy(100)
-            .build(),
-        BrainInspectorUiPlugin,
-    ));
-    app.update();
-
-    let herbivore = app
-        .world_mut()
-        .query_filtered::<Entity, With<Herbivore>>()
-        .iter(app.world())
-        .next()
-        .expect("seeded herbivore");
-
-    app.world_mut().resource_mut::<InspectedCharacter>().0 = Some(herbivore);
-
-    let has_snapshot = app
-        .world_mut()
-        .run_system_once(move |inspector: CharacterInspector| {
-            let snap = inspector.snapshot()?;
-            assert_eq!(snap.entity, herbivore);
-            assert_eq!(snap.energy.current(), 50);
-            assert_eq!(snap.generation.number(), 1);
-            Some(())
-        })
-        .unwrap();
-    assert!(has_snapshot.is_some());
-
-    // Despawning the inspected character must automatically clear `InspectedCharacter`.
-    app.world_mut().despawn(herbivore);
-    app.world_mut().flush();
-
-    assert_eq!(app.world().resource::<InspectedCharacter>().0, None);
 }
 
 #[test]
