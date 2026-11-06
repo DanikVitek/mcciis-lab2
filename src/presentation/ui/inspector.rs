@@ -53,6 +53,8 @@ use crate::simulation::spatial::SpatialGrid;
 
 const MAX_CLICK_DRAG_DISTANCE_PX: f32 = 5.0;
 const INSPECTOR_PANEL_WIDTH: f32 = 350.0;
+const MAX_POV_CANVAS_HEIGHT_PX: f32 = 240.0;
+const MAX_POV_TILE_PX: f32 = 42.0;
 
 /// Tracks which character entity (`Herbivore` or `Predator`), if any, is currently selected for inspection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Resource)]
@@ -450,7 +452,7 @@ fn render_pov_panel_contents(
 
     ui.add_space(6.0);
 
-    // Ego-centric POV grid canvas: local x in -2..=2 (5 cols), local y in -1..=2 (4 rows)
+    // Ego-centric POV grid canvas dynamically sized to `snapshot.sensors.bounds()`
     let inputs = snapshot.sensed_inputs.as_slice();
     let zones = [
         SensorZoneVisual {
@@ -483,126 +485,147 @@ fn render_pov_panel_contents(
         },
     ];
 
-    let cols = 5usize; // local_x: -2..=2
-    let rows = 4usize; // local_y: -1..=2 (top row is y = 2)
-    let tile_px = 42.0;
+    let (min_bound, max_bound) = snapshot.sensors.bounds();
+    let cols = (i32::from(max_bound.x) - i32::from(min_bound.x) + 1) as usize;
+    let rows = (i32::from(max_bound.y) - i32::from(min_bound.y) + 1) as usize;
+
+    let max_canvas_width = ui.available_width();
+    let tile_px = (max_canvas_width / cols as f32)
+        .min(MAX_POV_CANVAS_HEIGHT_PX / rows as f32)
+        .min(MAX_POV_TILE_PX);
+    let tile_scale = (tile_px / MAX_POV_TILE_PX).clamp(0.2, 1.0);
     let grid_px_size = egui::vec2(cols as f32 * tile_px, rows as f32 * tile_px);
 
-    ui.vertical_centered(|ui| {
-        let (canvas_rect, _) = ui.allocate_exact_size(grid_px_size, egui::Sense::hover());
-        let painter = ui.painter_at(canvas_rect);
+    // Reserve the full panel width for the POV preview row and center the canvas inside it
+    let (row_rect, _) = ui.allocate_exact_size(
+        egui::vec2(max_canvas_width, grid_px_size.y),
+        egui::Sense::hover(),
+    );
+    let canvas_rect = egui::Align2::CENTER_CENTER.align_size_within_rect(grid_px_size, row_rect);
+    let painter = ui.painter_at(canvas_rect);
 
-        let water_cell = egui::Color32::from_rgb(32, 74, 115);
-        let water_border = egui::Color32::from_rgb(18, 43, 68);
+    let water_cell = egui::Color32::from_rgb(32, 74, 115);
+    let water_border = egui::Color32::from_rgb(18, 43, 68);
+    let cell_border_width = (1.5 * tile_scale).max(0.75);
 
-        let tile_rect = |local_x: i16, local_y: i16| -> egui::Rect {
-            let col = (local_x + 2) as f32;
-            let row = (2 - local_y) as f32;
-            let min = canvas_rect.min + egui::vec2(col * tile_px, row * tile_px);
-            egui::Rect::from_min_size(min, egui::vec2(tile_px, tile_px))
-        };
+    let tile_rect = |local_x: i16, local_y: i16| -> egui::Rect {
+        let col = f32::from(local_x - min_bound.x);
+        let row = f32::from(max_bound.y - local_y);
+        let min = canvas_rect.min + egui::vec2(col * tile_px, row * tile_px);
+        egui::Rect::from_min_size(min, egui::vec2(tile_px, tile_px))
+    };
 
-        // 1. Base water cells and cell borders
-        for local_y in -1..=2 {
-            for local_x in -2..=2 {
-                let r = tile_rect(local_x, local_y);
-                painter.rect(
-                    r,
-                    egui::CornerRadius::ZERO,
-                    water_cell,
-                    egui::Stroke::new(1.5, water_border),
-                    egui::epaint::StrokeKind::Inside,
+    // 1. Base water cells and cell borders
+    for local_y in min_bound.y..=max_bound.y {
+        for local_x in min_bound.x..=max_bound.x {
+            let r = tile_rect(local_x, local_y);
+            painter.rect(
+                r,
+                egui::CornerRadius::ZERO,
+                water_cell,
+                egui::Stroke::new(cell_border_width, water_border),
+                egui::epaint::StrokeKind::Inside,
+            );
+        }
+    }
+
+    // 2. Highlight sensor zones by activation intensity (1 target type per RGB channel:
+    //    R = Predator, G = Algae/Plant, B = Herbivore)
+    for zone in &zones {
+        let [plants_act, herbivores_act, predators_act] = zone.activations;
+        let r_ch = (predators_act.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let g_ch = (plants_act.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let b_ch = (herbivores_act.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let max_act = predators_act
+            .max(plants_act)
+            .max(herbivores_act)
+            .clamp(0.0, 1.0);
+
+        if max_act > 0.0 {
+            let alpha = (65.0 + 150.0 * max_act).round() as u8;
+            let fill = egui::Color32::from_rgba_unmultiplied(r_ch, g_ch, b_ch, alpha);
+            for &offset in zone.offsets {
+                painter.rect_filled(
+                    tile_rect(offset.x, offset.y).shrink(cell_border_width),
+                    egui::CornerRadius::same(2),
+                    fill,
                 );
             }
         }
+    }
 
-        // 2. Highlight sensor zones by activation intensity (1 target type per RGB channel:
-        //    R = Predator, G = Algae/Plant, B = Herbivore)
-        for zone in &zones {
-            let [plants_act, herbivores_act, predators_act] = zone.activations;
-            let r_ch = (predators_act.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let g_ch = (plants_act.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let b_ch = (herbivores_act.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let max_act = predators_act
-                .max(plants_act)
-                .max(herbivores_act)
-                .clamp(0.0, 1.0);
+    // 3. Draw organisms present in each local POV cell
+    let grid_size = spatial_grid.size();
+    let plant_radius = 5.0 * tile_scale;
+    let other_char_radius = 7.5 * tile_scale;
+    let self_ring_radius = 13.0 * tile_scale;
 
-            if max_act > 0.0 {
-                let alpha = (65.0 + 150.0 * max_act).round() as u8;
-                let fill = egui::Color32::from_rgba_unmultiplied(r_ch, g_ch, b_ch, alpha);
-                for &offset in zone.offsets {
-                    if (-2..=2).contains(&offset.x) && (-1..=2).contains(&offset.y) {
-                        painter.rect_filled(
-                            tile_rect(offset.x, offset.y).shrink(1.5),
-                            egui::CornerRadius::same(2),
-                            fill,
+    for local_y in min_bound.y..=max_bound.y {
+        for local_x in min_bound.x..=max_bound.x {
+            let offset = I16Vec2::new(local_x, local_y);
+            let world_tile =
+                snapshot
+                    .position
+                    .add_wrapping_rotated(offset, snapshot.facing, grid_size);
+            let r = tile_rect(local_x, local_y);
+            let center = r.center();
+
+            let mut self_color = None;
+            for &(ent, kind) in spatial_grid.entities_at(world_tile) {
+                match kind {
+                    EntityKind::Plant => {
+                        painter.circle_filled(
+                            center,
+                            plant_radius,
+                            egui::Color32::from_rgb(80, 225, 115),
                         );
                     }
-                }
-            }
-        }
+                    EntityKind::Herbivore | EntityKind::Predator => {
+                        let body_color = if kind == EntityKind::Herbivore {
+                            egui::Color32::from_rgb(240, 215, 70)
+                        } else {
+                            egui::Color32::from_rgb(240, 85, 85)
+                        };
 
-        // 3. Draw organisms present in each local POV cell
-        let grid_size = spatial_grid.size();
-        for local_y in -1..=2 {
-            for local_x in -2..=2 {
-                let offset = I16Vec2::new(local_x, local_y);
-                let world_tile =
-                    snapshot
-                        .position
-                        .add_wrapping_rotated(offset, snapshot.facing, grid_size);
-                let r = tile_rect(local_x, local_y);
-                let center = r.center();
-
-                let mut self_color = None;
-                for &(ent, kind) in spatial_grid.entities_at(world_tile) {
-                    match kind {
-                        EntityKind::Plant => {
-                            painter.circle_filled(
+                        if ent == snapshot.entity {
+                            self_color = Some(body_color);
+                        } else {
+                            painter.circle_filled(center, other_char_radius, body_color);
+                            painter.circle_stroke(
                                 center,
-                                5.0,
-                                egui::Color32::from_rgb(80, 225, 115),
+                                other_char_radius,
+                                egui::Stroke::new(
+                                    (1.0 * tile_scale).max(0.75),
+                                    egui::Color32::BLACK,
+                                ),
                             );
-                        }
-                        EntityKind::Herbivore | EntityKind::Predator => {
-                            let body_color = if kind == EntityKind::Herbivore {
-                                egui::Color32::from_rgb(240, 215, 70)
-                            } else {
-                                egui::Color32::from_rgb(240, 85, 85)
-                            };
-
-                            if ent == snapshot.entity {
-                                self_color = Some(body_color);
-                            } else {
-                                painter.circle_filled(center, 7.5, body_color);
-                                painter.circle_stroke(
-                                    center,
-                                    7.5,
-                                    egui::Stroke::new(1.0, egui::Color32::BLACK),
-                                );
-                            }
                         }
                     }
                 }
+            }
 
-                if let Some(body_color) = self_color {
-                    // Ego organism at (0, 0), always facing Up in its own POV and drawn on top
-                    painter.circle_stroke(
-                        center,
-                        13.0,
-                        egui::Stroke::new(2.0, egui::Color32::WHITE),
-                    );
-                    draw_oriented_bacterium(&painter, center, egui::vec2(0.0, -1.0), body_color);
-                }
+            if let Some(body_color) = self_color {
+                // Ego organism at (0, 0), always facing Up in its own POV and drawn on top
+                painter.circle_stroke(
+                    center,
+                    self_ring_radius,
+                    egui::Stroke::new((2.0 * tile_scale).max(1.0), egui::Color32::WHITE),
+                );
+                draw_oriented_bacterium(
+                    &painter,
+                    center,
+                    egui::vec2(0.0, -1.0),
+                    body_color,
+                    tile_scale,
+                );
             }
         }
+    }
 
-        // 4. Outline each of the 4 sensor zones & label them
-        for zone in &zones {
-            draw_zone_perimeter(&painter, zone, &tile_rect);
-        }
-    });
+    // 4. Outline each of the 4 sensor zones & label them
+    for zone in &zones {
+        draw_zone_perimeter(&painter, zone, &tile_rect, tile_scale);
+    }
 
     ui.add_space(6.0);
 
@@ -626,10 +649,10 @@ fn render_pov_panel_contents(
 
     ui.add_space(2.0);
     egui::Grid::new("pov_zone_readout_grid")
-        .num_columns(4)
-        .spacing([10.0, 2.0])
+        .num_columns(2)
+        .spacing([16.0, 2.0])
         .show(ui, |ui| {
-            for zone in &zones {
+            for (idx, zone) in zones.iter().enumerate() {
                 let [g, b, r] = zone.activations;
                 ui.colored_label(
                     zone.outline_color,
@@ -637,8 +660,10 @@ fn render_pov_panel_contents(
                         .small()
                         .monospace(),
                 );
+                if idx % 2 == 1 {
+                    ui.end_row();
+                }
             }
-            ui.end_row();
         });
 }
 
@@ -647,17 +672,18 @@ fn draw_oriented_bacterium(
     center: egui::Pos2,
     forward: egui::Vec2,
     color: egui::Color32,
+    scale: f32,
 ) {
     let dir = forward.normalized();
     let perp = egui::vec2(-dir.y, dir.x);
-    let tip = center + dir * 10.0;
-    let back_left = center - dir * 7.0 + perp * 6.5;
-    let back_right = center - dir * 7.0 - perp * 6.5;
+    let tip = center + dir * (10.0 * scale);
+    let back_left = center - dir * (7.0 * scale) + perp * (6.5 * scale);
+    let back_right = center - dir * (7.0 * scale) - perp * (6.5 * scale);
 
     painter.add(egui::Shape::convex_polygon(
         vec![tip, back_right, back_left],
         color,
-        egui::Stroke::new(1.2, egui::Color32::BLACK),
+        egui::Stroke::new((1.2 * scale).max(0.75), egui::Color32::BLACK),
     ));
 }
 
@@ -665,17 +691,15 @@ fn draw_zone_perimeter(
     painter: &egui::Painter,
     zone: &SensorZoneVisual<'_>,
     tile_rect: &dyn Fn(i16, i16) -> egui::Rect,
+    scale: f32,
 ) {
     let contains = |x: i16, y: i16| zone.offsets.contains(&I16Vec2::new(x, y));
-    let stroke = egui::Stroke::new(2.0, zone.outline_color);
-    let inset = 2.0;
+    let stroke = egui::Stroke::new((2.0 * scale).clamp(1.0, 2.0), zone.outline_color);
+    let inset = (2.0 * scale).clamp(1.0, 2.0);
 
     let mut top_left_corner: Option<egui::Pos2> = None;
 
     for &offset in zone.offsets {
-        if !((-2..=2).contains(&offset.x) && (-1..=2).contains(&offset.y)) {
-            continue;
-        }
         let r = tile_rect(offset.x, offset.y);
         if top_left_corner.is_none_or(|p| r.min.y < p.y || (r.min.y == p.y && r.min.x < p.x)) {
             top_left_corner = Some(r.min);
@@ -724,11 +748,14 @@ fn draw_zone_perimeter(
     }
 
     if let Some(corner) = top_left_corner {
+        let pad_x = (5.0 * scale).max(2.0);
+        let pad_y = (4.0 * scale).max(1.5);
+        let font_size = (9.5 * scale).max(7.0);
         painter.text(
-            corner + egui::vec2(5.0, 4.0),
+            corner + egui::vec2(pad_x, pad_y),
             egui::Align2::LEFT_TOP,
             zone.short,
-            egui::FontId::monospace(9.5),
+            egui::FontId::monospace(font_size),
             zone.outline_color,
         );
     }

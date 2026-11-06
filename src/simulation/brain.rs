@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    LazyLock,
+};
+
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
 use itertools::Itertools;
@@ -23,20 +28,155 @@ use crate::grid::{
 };
 
 /// Base offsets for the sensors, as if the agent is [facing](Facing) [North](Facing::North)
-#[derive(Debug, Component)]
+#[derive(Debug, Clone, Component)]
 #[component(immutable)]
 pub struct SensorOffsets {
     /// Front far sight sensors
-    front: Box<[I16Vec2]>,
+    front: Arc<[I16Vec2]>,
     /// Left far sight sensors
-    left: Box<[I16Vec2]>,
+    left: Arc<[I16Vec2]>,
     /// Right far sight sensors
-    right: Box<[I16Vec2]>,
+    right: Arc<[I16Vec2]>,
     /// Near sight sensors.
     ///
     /// Agent can interact with the near zone
-    near: Box<[I16Vec2]>,
+    near: Arc<[I16Vec2]>,
 }
+
+/// ```text
+/// FFFFFFFFF
+/// FFFFFFFFF
+/// LFFFFFFFR
+/// LLFFFFFRR
+/// LLLFFFRRR
+/// LLLNNNRRR
+/// LLLNONRRR
+/// ```
+pub static SENSORS_PREDATOR: LazyLock<SensorOffsets> = LazyLock::new(|| {
+    #[rustfmt::skip]
+    let front = Arc::new(
+        [
+            [-4, 6], [-3, 6], [-2, 6], [-1, 6], [0, 6], [1, 6], [2, 6], [3, 6], [4, 6],
+            [-4, 5], [-3, 5], [-2, 5], [-1, 5], [0, 5], [1, 5], [2, 5], [3, 5], [4, 5],
+                     [-3, 4], [-2, 4], [-1, 4], [0, 4], [1, 4], [2, 4], [3, 4],
+                              [-2, 3], [-1, 3], [0, 3], [1, 3], [2, 3],
+                                       [-1, 2], [0, 2], [1, 2],
+        ]
+        .map(I16Vec2::from_array),
+    );
+
+    #[rustfmt::skip]
+    let left = Arc::new(
+        [
+            [-4, 4],
+            [-4, 3], [-3, 3],
+            [-4, 2], [-3, 2], [-2, 2],
+            [-4, 1], [-3, 1], [-2, 1],
+            [-4, 0], [-3, 0], [-2, 0],
+        ]
+        .map(I16Vec2::from_array),
+    );
+
+    #[rustfmt::skip]
+    let right = Arc::new(
+        [
+                            [4, 4],
+                    [3, 3], [4, 3],
+            [2, 2], [3, 2], [4, 2],
+            [2, 1], [3, 1], [4, 1],
+            [2, 0], [3, 0], [4, 0],
+        ]
+        .map(I16Vec2::from_array),
+    );
+
+    #[rustfmt::skip]
+    let near = Arc::new(
+        [
+            [-1, 1], [0, 1], [1, 1],
+            [-1, 0], [0, 0], [1, 0],
+        ]
+        .map(I16Vec2::from_array),
+    );
+
+    SensorOffsets {
+        front,
+        left,
+        right,
+        near,
+    }
+});
+
+/// ```text
+/// LLFFXXXXXFFRR
+/// LLLFFXXXFFRRR
+/// LLLLFFFFFRRRR
+/// LLLLLFFFRRRRR
+/// LLLLLNNNRRRRR
+/// LLLLLNONRRRRR
+/// LLLLLXXXRRRRR
+/// LLLLXXXXXRRRR
+/// LLLXXXXXXXRRR
+/// ```
+pub static SENSORS_HERBIVORE: LazyLock<SensorOffsets> = LazyLock::new(|| {
+    #[rustfmt::skip]
+    let front = Arc::new(
+        [
+            [-4, 5], [-3, 5],                                           [3, 5], [4, 5],
+                     [-3, 4], [-2, 4],                          [2, 4], [3, 4],
+                              [-2, 3], [-1, 3], [0, 3], [1, 3], [2, 3],
+                                       [-1, 2], [0, 2], [1, 2],
+        ]
+        .map(I16Vec2::from_array),
+    );
+
+    #[rustfmt::skip]
+    let left = Arc::new(
+        [
+            [-6,  5], [-5,  5],
+            [-6,  4], [-5,  4], [-4,  4],
+            [-6,  3], [-5,  3], [-4,  3], [-3,  3],
+            [-6,  2], [-5,  2], [-4,  2], [-3,  2], [-2,  2],
+            [-6,  1], [-5,  1], [-4,  1], [-3,  1], [-2,  1],
+            [-6,  0], [-5,  0], [-4,  0], [-3,  0], [-2,  0],
+            [-6, -1], [-5, -1], [-4, -1], [-3, -1], [-2, -1],
+            [-6, -2], [-5, -2], [-4, -2], [-3, -2],
+            [-6, -3], [-5, -3], [-4, -3],
+        ]
+        .map(I16Vec2::from_array),
+    );
+
+    #[rustfmt::skip]
+    let right = Arc::new(
+        [
+                                       [5,  5], [6,  5],
+                              [4,  4], [5,  4], [6,  4],
+                     [3,  3], [4,  3], [5,  3], [6,  3],
+            [2,  2], [3,  2], [4,  2], [5,  2], [6,  2],
+            [2,  1], [3,  1], [4,  1], [5,  1], [6,  1],
+            [2,  0], [3,  0], [4,  0], [5,  0], [6,  0],
+            [2, -1], [3, -1], [4, -1], [5, -1], [6, -1],
+                     [3, -2], [4, -2], [5, -2], [6, -2],
+                              [4, -3], [5, -3], [6, -3],
+        ]
+        .map(I16Vec2::from_array),
+    );
+
+    #[rustfmt::skip]
+    let near = Arc::new(
+        [
+            [-1, 1], [0, 1], [1, 1],
+            [-1, 0], [0, 0], [1, 0],
+        ]
+        .map(I16Vec2::from_array),
+    );
+
+    SensorOffsets {
+        front,
+        left,
+        right,
+        near,
+    }
+});
 
 impl SensorOffsets {
     pub fn front(&self) -> &[I16Vec2] {
@@ -54,13 +194,25 @@ impl SensorOffsets {
     pub fn near(&self) -> &[I16Vec2] {
         &self.near
     }
+
+    /// Returns the inclusive `(min, max)` ego-centric tile coordinates covering `(0, 0)` and all sensor zones.
+    pub fn bounds(&self) -> (I16Vec2, I16Vec2) {
+        self.front
+            .iter()
+            .chain(self.left.iter())
+            .chain(self.right.iter())
+            .chain(self.near.iter())
+            .fold((I16Vec2::ZERO, I16Vec2::ZERO), |(min, max), &offset| {
+                (min.min(offset), max.max(offset))
+            })
+    }
 }
 
 impl Default for SensorOffsets {
     fn default() -> Self {
         let front = (-2..=2).map(|x| I16Vec2 { x, y: 2 }).collect();
-        let left = Box::new([I16Vec2 { y: 0, x: -2 }, I16Vec2 { y: 1, x: -2 }]);
-        let right = Box::new([I16Vec2 { y: 0, x: 2 }, I16Vec2 { y: 1, x: 2 }]);
+        let left = Arc::new([I16Vec2 { y: 0, x: -2 }, I16Vec2 { y: 1, x: -2 }]);
+        let right = Arc::new([I16Vec2 { y: 0, x: 2 }, I16Vec2 { y: 1, x: 2 }]);
         let near = (-1..=1)
             .cartesian_product(0..=1)
             .map(|(x, y)| I16Vec2 { x, y })

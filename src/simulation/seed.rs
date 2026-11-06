@@ -23,6 +23,10 @@ use crate::grid::{
     GridPosition,
     GridSize,
 };
+use crate::simulation::brain::{
+    SENSORS_HERBIVORE,
+    SENSORS_PREDATOR,
+};
 use crate::simulation::organism::Energy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Resource)]
@@ -191,7 +195,13 @@ fn populate_grid(
                 match idx {
                     HERBIVORE => {
                         let entity = commands
-                            .spawn((Herbivore, pos, dir, Energy::from(initial_energy)))
+                            .spawn((
+                                Herbivore,
+                                pos,
+                                dir,
+                                Energy::from(initial_energy),
+                                SENSORS_HERBIVORE.to_owned(),
+                            ))
                             .id();
                         spatial_grid.insert(pos, entity, EntityKind::Herbivore);
                         herbivores_total -= 1;
@@ -203,7 +213,13 @@ fn populate_grid(
                     }
                     PREDATOR => {
                         let entity = commands
-                            .spawn((Predator, pos, dir, Energy::from(initial_energy)))
+                            .spawn((
+                                Predator,
+                                pos,
+                                dir,
+                                Energy::from(initial_energy),
+                                SENSORS_PREDATOR.to_owned(),
+                            ))
                             .id();
                         spatial_grid.insert(pos, entity, EntityKind::Predator);
                         predators_total -= 1;

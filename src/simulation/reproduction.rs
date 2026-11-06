@@ -11,6 +11,8 @@ use super::brain::{
     Brain,
     INPUTS,
     OUTPUTS,
+    SENSORS_HERBIVORE,
+    SENSORS_PREDATOR,
 };
 use super::organism::{
     Energy,
@@ -300,6 +302,7 @@ pub(super) fn reproduction(
                     birth.child_brain,
                     birth.child_gen,
                     birth.child_energy,
+                    SENSORS_HERBIVORE.to_owned(),
                 ))
                 .id()
         } else {
@@ -311,6 +314,7 @@ pub(super) fn reproduction(
                     birth.child_brain,
                     birth.child_gen,
                     birth.child_energy,
+                    SENSORS_PREDATOR.to_owned(),
                 ))
                 .id()
         };
