@@ -15,7 +15,6 @@ use super::sprites::{
     SpriteTransformSystems,
     TILE_SIZE,
     WATER_DARK_COLOR,
-    grid_origin_offset,
 };
 use super::ui::inspector::InspectedCharacter;
 use crate::grid::GridSize;
@@ -186,8 +185,7 @@ fn follow_inspected_character(
         return;
     };
 
-    let target_world_xy =
-        grid_origin_offset(*field_size) + character_transform.translation.truncate();
+    let target_world_xy = character_transform.translation.truncate();
     camera_transform.translation.x = target_world_xy.x;
     camera_transform.translation.y = target_world_xy.y;
 

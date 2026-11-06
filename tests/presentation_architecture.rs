@@ -21,13 +21,10 @@ use life_sim::grid::{
 };
 use life_sim::presentation::sprites::{
     GridBackground,
-    GridRootEntity,
-    GridVisualRoot,
     PreviousPose,
     SelectionHighlight,
     TILE_SIZE,
-    grid_origin_offset,
-    grid_to_local_xy,
+    grid_to_world_xy,
 };
 use life_sim::presentation::ui::HistoryPlotOpen;
 use life_sim::presentation::ui::config::SimConfig;
@@ -166,7 +163,7 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         .set(AppState::Simulation);
 
     // This update runs `StateTransition` (`OnEnter(AppState::Simulation)` -> `setup_simulation_from_config`)
-    // followed by `Update` and `PostUpdate` (`sync_grid_root_centering`, `interpolate_character_transform`, etc.).
+    // followed by `Update` and `PostUpdate` (`sync_grid_background`, `interpolate_character_transform`, etc.).
     app.update();
 
     assert_eq!(
@@ -195,20 +192,10 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         &[0]
     );
 
-    // Verify `SpritesPlugin` centered `GridVisualRoot`, unhid and resized `GridBackground`,
-    // and attached `Sprite` + `ChildOf(grid_root)` + `PreviousPose` to seeded entities.
-    let grid_root = app.world().resource::<GridRootEntity>().0;
+    // Verify `SpritesPlugin` unhid and resized `GridBackground`,
+    // and attached `Sprite` + `PreviousPose` to seeded entities at root level.
     {
         let world = app.world_mut();
-        let root_transform = world
-            .query_filtered::<&Transform, With<GridVisualRoot>>()
-            .single(world)
-            .expect("GridVisualRoot transform");
-        assert_eq!(
-            root_transform.translation,
-            grid_origin_offset(custom_size).extend(0.0)
-        );
-
         let (bg_vis, bg_sprite) = world
             .query_filtered::<(&Visibility, &Sprite), With<GridBackground>>()
             .single(world)
@@ -220,20 +207,18 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         );
 
         let plant_sprites = world
-            .query_filtered::<&ChildOf, (With<Plant>, With<Sprite>)>()
+            .query_filtered::<Entity, (With<Plant>, With<Sprite>)>()
             .iter(world)
-            .filter(|c| c.0 == grid_root)
             .count();
         assert_eq!(plant_sprites, 50);
 
         let character_sprites = world
-            .query_filtered::<&ChildOf, (
+            .query_filtered::<Entity, (
                 Or<(With<Herbivore>, With<Predator>)>,
                 With<Sprite>,
                 With<PreviousPose>,
             )>()
             .iter(world)
-            .filter(|c| c.0 == grid_root)
             .count();
         assert_eq!(character_sprites, 30);
     }
@@ -250,7 +235,7 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         let corner = GridPosition::new(0, 0);
         *world.get_mut::<GridPosition>(entity).unwrap() = corner;
         world.get_mut::<Transform>(entity).unwrap().translation =
-            grid_to_local_xy(corner).extend(1.0);
+            grid_to_world_xy(corner, custom_size).extend(1.0);
         (entity, corner)
     };
 
@@ -263,7 +248,7 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
             .query_filtered::<&Transform, With<Camera2d>>()
             .single(world)
             .expect("Camera2d transform");
-        let expected_world_xy = grid_origin_offset(custom_size) + grid_to_local_xy(edge_pos);
+        let expected_world_xy = grid_to_world_xy(edge_pos, custom_size);
         assert_eq!(camera_transform.translation.truncate(), expected_world_xy);
 
         let (highlight_transform, highlight_vis) = world
@@ -273,7 +258,7 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         assert_eq!(*highlight_vis, Visibility::Inherited);
         assert_eq!(
             highlight_transform.translation.truncate(),
-            grid_to_local_xy(edge_pos)
+            expected_world_xy
         );
     }
 

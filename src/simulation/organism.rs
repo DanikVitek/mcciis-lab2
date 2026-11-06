@@ -12,6 +12,7 @@ pub type CharacterFilter = Or<(With<Herbivore>, With<Predator>)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
 #[require(ValueAsFood(1.into()))]
+#[component(immutable)]
 pub struct Plant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
@@ -21,6 +22,7 @@ pub struct Plant;
     Generation,
     Brain = rand::random::<Brain>(),
 )]
+#[component(immutable)]
 pub struct Herbivore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
@@ -29,6 +31,7 @@ pub struct Herbivore;
     Generation,
     Brain = rand::random::<Brain>(),
 )]
+#[component(immutable)]
 pub struct Predator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

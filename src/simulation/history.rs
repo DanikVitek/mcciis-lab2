@@ -1,7 +1,6 @@
 use core::iter::FusedIterator;
 use core::num::NonZeroU64;
 use core::slice;
-use std::collections::BTreeMap;
 
 use bevy::prelude::*;
 
@@ -341,22 +340,37 @@ impl Plugin for HistoryRecorderPlugin {
     }
 }
 
-fn sample_generations(query: &Query<&Generation, CharacterFilter>) -> GenerationSample {
-    let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+fn sample_generations(query: impl IntoIterator<Item = Generation>) -> GenerationSample {
+    let mut table: Vec<u32> = Vec::new();
     let mut min_gen: Option<u32> = None;
     let mut max_gen: Option<u32> = None;
 
     for generation in query {
         let n = generation.number();
-        *map.entry(n).or_insert(0) += 1;
+        let idx = n as usize;
+        if idx >= table.len() {
+            table.resize(idx + 1, 0);
+        }
+        table[idx] += 1;
         min_gen = Some(min_gen.map_or(n, |m| m.min(n)));
         max_gen = Some(max_gen.map_or(n, |m| m.max(n)));
     }
 
+    let counts = if let (Some(min), Some(max)) = (min_gen, max_gen) {
+        (min..=max)
+            .filter_map(|gen_num| {
+                let c = table[gen_num as usize];
+                (c > 0).then_some((gen_num, c))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     GenerationSample {
         oldest_alive: min_gen,
         youngest: max_gen,
-        counts: map.into_iter().collect(),
+        counts,
     }
 }
 
@@ -371,7 +385,7 @@ fn on_world_seeded(
     history.push(HistorySample {
         tick: tick_count.0,
         counts: spatial_grid.total_counts(),
-        generation: sample_generations(&generations),
+        generation: sample_generations(generations.iter().copied()),
     });
 }
 
@@ -388,6 +402,6 @@ fn record_tick_sample(
     history.push(HistorySample {
         tick: tick_count.0,
         counts: spatial_grid.total_counts(),
-        generation: sample_generations(&generations),
+        generation: sample_generations(generations.iter().copied()),
     });
 }

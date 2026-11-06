@@ -47,12 +47,17 @@ pub fn grid_origin_offset(grid_size: GridSize) -> Vec2 {
     -TILE_SIZE * (grid_size.as_vec2() - Vec2::ONE) / 2.0
 }
 
-/// Local translation of a [`GridPosition`] relative to [`GridVisualRoot`].
+/// Local translation of a [`GridPosition`] relative to tile `(0, 0)`.
 pub fn grid_to_local_xy(pos: GridPosition) -> Vec2 {
     Vec2 {
         x: f32::from(pos.x) * TILE_SIZE.x,
         y: f32::from(pos.y) * TILE_SIZE.y,
     }
+}
+
+/// World-space translation of a [`GridPosition`] for a centered [`GridSize`] field.
+pub fn grid_to_world_xy(pos: GridPosition, grid_size: GridSize) -> Vec2 {
+    grid_origin_offset(grid_size) + grid_to_local_xy(pos)
 }
 
 /// Converts a 2D world-space coordinate (e.g. from a cursor click) into a [`GridPosition`],
@@ -70,11 +75,6 @@ pub fn world_to_grid_pos(world_xy: Vec2, grid_size: GridSize) -> Option<GridPosi
     Some(GridPosition::new(tile.x as u16, tile.y as u16))
 }
 
-/// Marker component for the centered parent entity holding all organism sprites.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
-#[require(Transform, Visibility)]
-pub struct GridVisualRoot;
-
 /// Marker component for the single background quad rendering the water cells and darker cell borders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
 pub struct GridBackground;
@@ -82,10 +82,6 @@ pub struct GridBackground;
 /// Marker component for the highlight ring rendered around the currently inspected character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
 pub struct SelectionHighlight;
-
-/// Resource storing the [`Entity`] of [`GridVisualRoot`] for fast `O(1)` parenting in observers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource)]
-pub struct GridRootEntity(pub Entity);
 
 #[derive(Debug, Clone, Resource)]
 pub struct OrganismSprites {
@@ -233,7 +229,9 @@ impl Plugin for SpritesPlugin {
         .add_systems(
             SimulationTick,
             (
-                remember_previous_pose.before(SimulationSystems::Step),
+                remember_previous_pose
+                    .before(SimulationSystems::Step)
+                    .run_if(resource_equals(SimulationSpeedMode::FixedStep)),
                 reset_step_transition.run_if(resource_equals(SimulationSpeedMode::FixedStep)),
             ),
         )
@@ -243,14 +241,21 @@ impl Plugin for SpritesPlugin {
                 update_step_transition.run_if(resource_equals(SimulationSpeedMode::FixedStep)),
                 set_step_transitioned.run_if(resource_equals(SimulationSpeedMode::Uncapped)),
             )
+                .run_if(
+                    in_state(AppState::Simulation)
+                        .and_then(|it: Res<StepTransition>| it.progress < 1.0),
+                ),
+        )
+        .configure_sets(
+            PostUpdate,
+            SpriteTransformSystems
                 .run_if(in_state(AppState::Simulation))
-                .run_if(|it: Res<StepTransition>| it.progress < 1.0),
+                .before(TransformSystems::Propagate),
         )
         .add_systems(
             PostUpdate,
             (
-                sync_grid_root_centering
-                    .run_if(in_state(AppState::Simulation).and_then(resource_changed::<GridSize>)),
+                sync_grid_background.run_if(resource_exists_and_changed::<GridSize>),
                 sync_translation_with_grid::<With<Plant>>
                     .run_if(resource_equals(SimulationSpeedMode::FixedStep)),
                 interpolate_character_transform.run_if(resource_changed::<StepTransition>),
@@ -260,9 +265,7 @@ impl Plugin for SpritesPlugin {
                 sync_selection_highlight,
             )
                 .chain_weak()
-                .in_set(SpriteTransformSystems)
-                .run_if(in_state(AppState::Simulation))
-                .before(TransformSystems::Propagate),
+                .in_set(SpriteTransformSystems),
         )
         .init_resource::<StepTransition>();
     }
@@ -276,15 +279,6 @@ fn setup_visual_root_and_sprites(
     mut highlight_materials: ResMut<Assets<SelectionHighlightMaterial>>,
 ) {
     let placeholder_size = GridSize::default();
-
-    let root = commands
-        .spawn((
-            GridVisualRoot,
-            Transform::from_translation(grid_origin_offset(placeholder_size).extend(0.0)),
-        ))
-        .id();
-
-    commands.insert_resource(GridRootEntity(root));
 
     let bg_material = bg_materials.add(GridBackgroundMaterial {
         cell_color: LinearRgba::from(WATER_CELL_COLOR),
@@ -310,7 +304,6 @@ fn setup_visual_root_and_sprites(
 
     commands.spawn((
         SelectionHighlight,
-        ChildOf(root),
         Sprite {
             custom_size: Some(TILE_SIZE * SELECTION_HIGHLIGHT_SCALE),
             ..default()
@@ -354,18 +347,17 @@ fn attach_visuals_to_plant(
     query: Query<&GridPosition>,
     mut commands: Commands,
     sprites: Res<OrganismSprites>,
-    grid_root: Res<GridRootEntity>,
+    field_size: Res<GridSize>,
 ) {
     let &pos = query.get_inner(add.entity).unwrap();
     commands.entity(add.entity).insert((
-        ChildOf(grid_root.0),
         Sprite {
             image: Plant::sprite_handle(&sprites),
             custom_size: Some(TILE_SIZE),
             ..default()
         },
         Transform {
-            translation: grid_to_local_xy(pos).extend(Plant::Z),
+            translation: grid_to_world_xy(pos, *field_size).extend(Plant::Z),
             ..default()
         },
     ));
@@ -377,18 +369,17 @@ fn attach_visuals_to_character<T: HasRemappedSprite + HasDedicatedZ>(
     query: Query<(&GridPosition, &Facing)>,
     sprites: Res<OrganismSprites>,
     shaders: Res<OrganismSpriteRemaps>,
-    grid_root: Res<GridRootEntity>,
+    field_size: Res<GridSize>,
 ) {
     let (&pos, &facing) = query.get_inner(add.entity).unwrap();
     commands.entity(add.entity).insert((
-        ChildOf(grid_root.0),
         Sprite {
             image: T::sprite_handle(&sprites),
             custom_size: Some(TILE_SIZE),
             ..default()
         },
         Transform {
-            translation: grid_to_local_xy(pos).extend(T::Z),
+            translation: grid_to_world_xy(pos, *field_size).extend(T::Z),
             rotation: facing.to_quat(),
             ..default()
         },
@@ -397,11 +388,17 @@ fn attach_visuals_to_character<T: HasRemappedSprite + HasDedicatedZ>(
     ));
 }
 
-fn remember_previous_pose(query: Query<(&mut PreviousPose, &GridPosition, &Facing)>) {
-    for (mut prev_pose, prev_pos, prev_facing) in query {
-        prev_pose.pos = *prev_pos;
-        prev_pose.facing = *prev_facing;
-    }
+fn remember_previous_pose(mut query: Query<(&mut PreviousPose, &GridPosition, &Facing)>) {
+    query
+        .par_iter_mut()
+        .for_each(|(mut prev_pose, &prev_pos, &prev_facing)| {
+            if prev_pose.pos != prev_pos {
+                prev_pose.pos = prev_pos;
+            }
+            if prev_pose.facing != prev_facing {
+                prev_pose.facing = prev_facing;
+            }
+        });
 }
 
 fn reset_step_transition(mut step_transition: ResMut<StepTransition>) {
@@ -433,9 +430,8 @@ fn update_step_transition(
 }
 
 #[allow(clippy::type_complexity)]
-fn sync_grid_root_centering(
+fn sync_grid_background(
     field_size: Res<GridSize>,
-    mut root_transform: Single<&mut Transform, With<GridVisualRoot>>,
     bg_query: Single<
         (
             &mut Sprite,
@@ -446,8 +442,6 @@ fn sync_grid_root_centering(
     >,
     mut bg_materials: ResMut<Assets<GridBackgroundMaterial>>,
 ) {
-    root_transform.translation = grid_origin_offset(*field_size).extend(0.0);
-
     let (mut bg_sprite, mut bg_vis, bg_mat_handle) = bg_query.into_inner();
     *bg_vis = Visibility::Inherited;
     bg_sprite.custom_size = Some(field_size.as_vec2() * TILE_SIZE);
@@ -457,65 +451,74 @@ fn sync_grid_root_centering(
 }
 
 fn sync_translation_with_grid<F: QueryFilter>(
-    query: Query<(&GridPosition, &mut Transform), (Changed<GridPosition>, F)>,
+    mut query: Query<(&GridPosition, &mut Transform), (Changed<GridPosition>, F)>,
+    field_size: Res<GridSize>,
 ) {
-    for (grid_position, mut transform) in query {
-        let z = transform.translation.z;
-        transform.translation = grid_to_local_xy(*grid_position).extend(z);
-    }
+    let origin = grid_origin_offset(*field_size);
+    query
+        .par_iter_mut()
+        .for_each(|(grid_position, mut transform)| {
+            let z = transform.translation.z;
+            transform.translation = (origin + grid_to_local_xy(*grid_position)).extend(z);
+        });
 }
 
-fn sync_rotation_with_grid(query: Query<(&Facing, &mut Transform), Changed<Facing>>) {
-    for (facing_direction, mut transform) in query {
-        transform.rotation = facing_direction.to_quat();
-    }
+fn sync_rotation_with_grid(mut query: Query<(&Facing, &mut Transform), Changed<Facing>>) {
+    query
+        .par_iter_mut()
+        .for_each(|(facing_direction, mut transform)| {
+            transform.rotation = facing_direction.to_quat();
+        });
 }
 
 fn interpolate_character_transform(
-    query: Query<(&PreviousPose, &GridPosition, &Facing, &mut Transform)>,
+    mut query: Query<(&PreviousPose, &GridPosition, &Facing, &mut Transform)>,
     step_transition: Res<StepTransition>,
     field_size: Res<GridSize>,
 ) {
     let size = field_size.as_ivec2();
     let lower_pos_delta_cap = -size / 2;
     let upper_pos_delta_cap = size / 2;
+    let origin = grid_origin_offset(*field_size);
 
     let eased_t = easing::SmootherStepCurve.sample_unchecked(step_transition.progress);
 
-    for (prev, &curr_pos, &curr_facing, mut transform) in query {
-        // avoid dereferencing transform mutably to not mark it as changed for bevy
+    query
+        .par_iter_mut()
+        .for_each(|(prev, &curr_pos, &curr_facing, mut transform)| {
+            // avoid dereferencing transform mutably to not mark it as changed for bevy
 
-        if prev.facing != curr_facing {
-            transform.rotation = prev.facing.to_quat().slerp(curr_facing.to_quat(), eased_t);
-        }
-
-        if prev.pos != curr_pos {
-            let wrapped_pos_delta = {
-                let mut pos_delta = curr_pos.as_ivec2() - prev.pos.as_ivec2();
-                if pos_delta.x < lower_pos_delta_cap.x {
-                    pos_delta.x += size.x;
-                } else if upper_pos_delta_cap.x < pos_delta.x {
-                    pos_delta.x -= size.x;
-                }
-                if pos_delta.y < lower_pos_delta_cap.y {
-                    pos_delta.y += size.y;
-                } else if upper_pos_delta_cap.y < pos_delta.y {
-                    pos_delta.y -= size.y;
-                }
-                pos_delta
-            };
-
-            let pos_delta_world = wrapped_pos_delta.as_vec2() * TILE_SIZE;
-
-            let z = transform.translation.z;
-            transform.translation = if eased_t < 0.5 {
-                grid_to_local_xy(prev.pos) + pos_delta_world * eased_t
-            } else {
-                grid_to_local_xy(curr_pos) - pos_delta_world * (1.0 - eased_t)
+            if prev.facing != curr_facing {
+                transform.rotation = prev.facing.to_quat().slerp(curr_facing.to_quat(), eased_t);
             }
-            .extend(z);
-        }
-    }
+
+            if prev.pos != curr_pos {
+                let wrapped_pos_delta = {
+                    let mut pos_delta = curr_pos.as_ivec2() - prev.pos.as_ivec2();
+                    if pos_delta.x < lower_pos_delta_cap.x {
+                        pos_delta.x += size.x;
+                    } else if upper_pos_delta_cap.x < pos_delta.x {
+                        pos_delta.x -= size.x;
+                    }
+                    if pos_delta.y < lower_pos_delta_cap.y {
+                        pos_delta.y += size.y;
+                    } else if upper_pos_delta_cap.y < pos_delta.y {
+                        pos_delta.y -= size.y;
+                    }
+                    pos_delta
+                };
+
+                let pos_delta_world = wrapped_pos_delta.as_vec2() * TILE_SIZE;
+
+                let z = transform.translation.z;
+                let local_xy = if eased_t < 0.5 {
+                    grid_to_local_xy(prev.pos) + pos_delta_world * eased_t
+                } else {
+                    grid_to_local_xy(curr_pos) - pos_delta_world * (1.0 - eased_t)
+                };
+                transform.translation = (origin + local_xy).extend(z);
+            }
+        });
 }
 
 #[allow(clippy::type_complexity)]

@@ -1,5 +1,6 @@
 use core::any::Any;
 use core::fmt;
+use std::sync::Mutex;
 
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
@@ -210,6 +211,16 @@ impl Plugin for ReproductionPlugin {
     }
 }
 
+struct PendingBirth {
+    parent_deceased: Option<(Entity, GridPosition)>,
+    is_herbivore: bool,
+    child_pos: GridPosition,
+    facing: Facing,
+    child_brain: Brain,
+    child_gen: Generation,
+    child_energy: Energy,
+}
+
 #[allow(clippy::type_complexity)]
 pub(super) fn reproduction(
     mut commands: Commands,
@@ -218,7 +229,7 @@ pub(super) fn reproduction(
     repro_threshold: Res<ReproductionThreshold>,
     max_energy: Res<MaxEnergy>,
     mutation_strategy: Res<MutationStrategy>,
-    query: Query<(
+    mut query: Query<(
         Entity,
         &mut Energy,
         &Brain,
@@ -228,66 +239,81 @@ pub(super) fn reproduction(
         Has<Herbivore>,
     )>,
 ) {
-    let mut rng = rand::rng();
-    for (entity, mut energy, brain, pos, facing, generation, is_herbivore) in query {
-        if !energy.is_enough_to_reproduce(*repro_threshold, *max_energy) {
-            continue;
-        }
+    let births = Mutex::new(Vec::new());
+    query.par_iter_mut().for_each(
+        |(entity, mut energy, brain, pos, facing, generation, is_herbivore)| {
+            if !energy.is_enough_to_reproduce(*repro_threshold, *max_energy) {
+                return;
+            }
 
-        let entity_kind = if is_herbivore {
+            let mut rng = rand::rng();
+            let offset = *[
+                [-1, -1],
+                [-1, 0],
+                [-1, 1],
+                [0, -1],
+                [0, 1],
+                [1, -1],
+                [1, 0],
+                [1, 1],
+            ]
+            .choose(&mut rng)
+            .unwrap();
+
+            let child_pos = pos.add_wrapping(I16Vec2::from_array(offset), *field_size);
+            let child_brain = Mutation::apply(&*mutation_strategy, brain);
+            let child_gen = generation.next();
+            let res = energy.distribute();
+            let parent_deceased = res.is_deceased().then_some((entity, *pos));
+            let child_energy = res.into_value();
+
+            births.lock().unwrap().push(PendingBirth {
+                parent_deceased,
+                is_herbivore,
+                child_pos,
+                facing: *facing,
+                child_brain,
+                child_gen,
+                child_energy,
+            });
+        },
+    );
+
+    for birth in births.into_inner().unwrap() {
+        let entity_kind = if birth.is_herbivore {
             EntityKind::Herbivore
         } else {
             EntityKind::Predator
         };
 
-        let offset = *[
-            [-1, -1],
-            [-1, 0],
-            [-1, 1],
-            [0, -1],
-            [0, 1],
-            [1, -1],
-            [1, 0],
-            [1, 1],
-        ]
-        .choose(&mut rng)
-        .unwrap();
-
-        let child_pos = pos.add_wrapping(I16Vec2::from_array(offset), *field_size);
-        let child_brain = Mutation::apply(&*mutation_strategy, brain);
-        let child_gen = generation.next();
-
-        let res = energy.distribute();
-
-        if res.is_deceased() {
-            commands.entity(entity).despawn();
-            spatial_grid.remove(*pos, entity, entity_kind);
+        if let Some((parent_entity, parent_pos)) = birth.parent_deceased {
+            commands.entity(parent_entity).despawn();
+            spatial_grid.remove(parent_pos, parent_entity, entity_kind);
         }
-        let child_energy = res.into_value();
 
-        let child = if is_herbivore {
+        let child = if birth.is_herbivore {
             commands
                 .spawn((
                     Herbivore,
-                    child_pos,
-                    *facing,
-                    child_brain,
-                    child_gen,
-                    child_energy,
+                    birth.child_pos,
+                    birth.facing,
+                    birth.child_brain,
+                    birth.child_gen,
+                    birth.child_energy,
                 ))
                 .id()
         } else {
             commands
                 .spawn((
                     Predator,
-                    child_pos,
-                    *facing,
-                    child_brain,
-                    child_gen,
-                    child_energy,
+                    birth.child_pos,
+                    birth.facing,
+                    birth.child_brain,
+                    birth.child_gen,
+                    birth.child_energy,
                 ))
                 .id()
         };
-        spatial_grid.insert(child_pos, child, entity_kind);
+        spatial_grid.insert(birth.child_pos, child, entity_kind);
     }
 }

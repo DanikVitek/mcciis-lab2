@@ -24,6 +24,7 @@ use crate::grid::{
 
 /// Base offsets for the sensors, as if the agent is [facing](Facing) [North](Facing::North)
 #[derive(Debug, Component)]
+#[component(immutable)]
 pub struct SensorOffsets {
     /// Front far sight sensors
     front: Box<[I16Vec2]>,
@@ -74,7 +75,8 @@ impl Default for SensorOffsets {
 }
 
 #[derive(Debug, Clone, Component)]
-#[require(SensorOffsets)]
+#[component(immutable)]
+#[require(SensorOffsets, PreparedAction)]
 pub struct Brain {
     weights: BrainWeights,
     biases: BrainBiases,
@@ -104,6 +106,9 @@ pub enum Action {
     GoForward,
     Consume,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
+pub struct PreparedAction(pub Option<Action>);
 
 impl Action {
     pub const ALL: [Self; OUTPUTS] = [

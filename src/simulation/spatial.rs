@@ -185,6 +185,8 @@ where
 #[derive(Resource)]
 pub struct SpatialGrid {
     size: GridSize,
+    /// Running O(1) population totals across the entire grid
+    total_counts: CellCounts<u32>,
     /// Hot array for `Brain` inputs: `[plants, herbivores, predators]` per tile
     counts: Vec<CellCounts<u16>>,
     /// Cold array for `Action::Consume` and tile inspection: entities currently standing on each tile
@@ -196,6 +198,7 @@ impl SpatialGrid {
         let len = usize::from(size.x) * usize::from(size.y);
         Self {
             size,
+            total_counts: CellCounts::default(),
             counts: vec![CellCounts::default(); len],
             entities: vec![Vec::new(); len],
         }
@@ -211,6 +214,7 @@ impl SpatialGrid {
     }
 
     pub fn clear(&mut self) {
+        self.total_counts = CellCounts::default();
         self.counts.fill(CellCounts::default());
         for cell in &mut self.entities {
             cell.clear();
@@ -228,6 +232,7 @@ impl SpatialGrid {
     pub fn insert(&mut self, pos: GridPosition, entity: Entity, kind: EntityKind) {
         let i = self.idx(pos);
         self.counts[i][kind] += 1;
+        self.total_counts[kind] += 1;
         self.entities[i].push((entity, kind));
     }
 
@@ -237,6 +242,7 @@ impl SpatialGrid {
         if let Some(pos_in_vec) = cell.iter().position(|&(e, _)| e == entity) {
             cell.swap_remove(pos_in_vec);
             self.counts[i][kind] -= 1;
+            self.total_counts[kind] -= 1;
             true
         } else {
             false
@@ -254,9 +260,18 @@ impl SpatialGrid {
         if from == to {
             return;
         }
-        let removed = self.remove(from, entity, kind);
-        debug_assert!(removed, "Moved entity was not registered at `from` tile");
-        self.insert(to, entity, kind);
+        let from_idx = self.idx(from);
+        let from_cell = &mut self.entities[from_idx];
+        let Some(pos_in_vec) = from_cell.iter().position(|&(e, _)| e == entity) else {
+            debug_assert!(false, "Moved entity was not registered at `from` tile");
+            return;
+        };
+        from_cell.swap_remove(pos_in_vec);
+        self.counts[from_idx][kind] -= 1;
+
+        let to_idx = self.idx(to);
+        self.counts[to_idx][kind] += 1;
+        self.entities[to_idx].push((entity, kind));
     }
 
     /// Returns all `(Entity, EntityKind)` pairs currently occupying `pos`.
@@ -314,11 +329,16 @@ impl SpatialGrid {
         None
     }
 
-    pub fn character_counts(&self) -> CharacterCounts {
-        self.counts.iter().copied().sum()
+    #[inline]
+    pub const fn character_counts(&self) -> CharacterCounts {
+        CharacterCounts {
+            herbivores: self.total_counts.herbivores,
+            predators: self.total_counts.predators,
+        }
     }
 
-    pub fn total_counts(&self) -> CellCounts<u32> {
-        self.counts.iter().copied().sum()
+    #[inline]
+    pub const fn total_counts(&self) -> CellCounts<u32> {
+        self.total_counts
     }
 }

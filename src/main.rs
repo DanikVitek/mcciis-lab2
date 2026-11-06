@@ -246,7 +246,16 @@ fn run_visual(args: VisualArgs) {
     App::new()
         .insert_resource(prefilled_config)
         .add_plugins((
-            DefaultPlugins.set(ImagePlugin::default_nearest()),
+            DefaultPlugins
+                .set(ImagePlugin::default_nearest())
+                .set(WindowPlugin {
+                    primary_window: Some({
+                        let mut w = Window::default();
+                        w.set_maximized(true);
+                        w
+                    }),
+                    ..default()
+                }),
             DeferredSimulationPlugin,
             DeferredReproductionPlugin,
             HistoryRecorderPlugin::default(),

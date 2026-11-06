@@ -4,7 +4,7 @@ pub mod organism;
 pub mod reproduction;
 pub mod seed;
 pub mod spatial;
-mod stepping;
+pub mod stepping;
 
 use bevy::app::AppExit;
 use bevy::ecs::schedule::ScheduleLabel;

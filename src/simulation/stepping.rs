@@ -1,9 +1,11 @@
 use bevy::ecs::entity::EntityHashSet;
+use bevy::ecs::relationship::RelationshipSourceCollection;
 use bevy::prelude::*;
 
 use super::brain::{
     Action,
     Brain,
+    PreparedAction,
     SensorOffsets,
     sense_brain_inputs,
 };
@@ -32,15 +34,74 @@ pub(super) struct SteppingPlugin;
 
 impl Plugin for SteppingPlugin {
     fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<TaskPoolPlugin>() {
+            app.add_plugins(TaskPoolPlugin::default());
+        }
+
         app.add_systems(
             SimulationTick,
-            step_organisms.in_set(SimulationSystems::Step),
+            (decide_actions, apply_actions)
+                .chain()
+                .in_set(SimulationSystems::Step),
         );
     }
 }
 
+/// Phase 1 (Parallel): Senses the [`SpatialGrid`] snapshot, evaluates each character's [`Brain`]
+/// across all worker threads on Bevy's [`ComputeTaskPool`](bevy::tasks::ComputeTaskPool), and
+/// immediately applies non-lethal [`Action::TurnLeft`] / [`Action::TurnRight`] updates in parallel.
 #[allow(clippy::type_complexity)]
-fn step_organisms(
+fn decide_actions(
+    spatial_grid: Res<SpatialGrid>,
+    mut characters: Query<
+        (
+            &GridPosition,
+            &mut Facing,
+            &mut Energy,
+            &mut Age,
+            &Brain,
+            &SensorOffsets,
+            &mut PreparedAction,
+            Has<Herbivore>,
+        ),
+        Without<Plant>,
+    >,
+) {
+    characters.par_iter_mut().for_each(
+        |(pos, mut facing, mut energy, mut age, brain, sensors, mut action, is_herbivore)| {
+            let self_kind = if is_herbivore {
+                EntityKind::Herbivore
+            } else {
+                EntityKind::Predator
+            };
+            let inputs = sense_brain_inputs(&spatial_grid, *pos, *facing, self_kind, sensors);
+            let chosen = brain.act_on(inputs);
+
+            // Apply non-lethal in-place turns directly in parallel so `apply_actions` only needs
+            // to process movements, consumption, and lethal energy depletion.
+            match chosen {
+                Action::TurnLeft if energy.0 > 1 => {
+                    let _ = energy.decrement();
+                    *facing = facing.counterclockwise();
+                    age.increment();
+                }
+                Action::TurnRight if energy.0 > 1 => {
+                    let _ = energy.decrement();
+                    *facing = facing.clockwise();
+                    age.increment();
+                }
+                _ => {}
+            }
+
+            action.0 = Some(chosen);
+        },
+    );
+}
+
+/// Phase 2 (Sequential): Resolves movements, consumption, and lethal energy depletion that mutate
+/// [`SpatialGrid`] or other entities.
+#[allow(clippy::type_complexity)]
+fn apply_actions(
     mut commands: Commands,
     mut spatial_grid: ResMut<SpatialGrid>,
     field_size: Res<GridSize>,
@@ -49,10 +110,10 @@ fn step_organisms(
         (
             Entity,
             &mut GridPosition,
-            &mut Facing,
+            &Facing,
             &mut Energy,
             &mut Age,
-            &Brain,
+            &mut PreparedAction,
             &SensorOffsets,
             Has<Herbivore>,
         ),
@@ -63,11 +124,14 @@ fn step_organisms(
 ) {
     let mut consumed_herbivores = EntityHashSet::new();
 
-    for (entity, mut pos, mut facing, mut energy, mut age, brain, sensors, is_herbivore) in
+    for (entity, mut pos, facing, mut energy, mut age, mut action, sensors, is_herbivore) in
         characters
     {
+        let Some(action) = action.0.take() else {
+            continue;
+        };
         let self_kind = if is_herbivore {
-            if consumed_herbivores.contains(&entity) {
+            if consumed_herbivores.remove(entity) {
                 continue;
             }
             EntityKind::Herbivore
@@ -75,25 +139,13 @@ fn step_organisms(
             EntityKind::Predator
         };
 
-        let inputs = sense_brain_inputs(&spatial_grid, *pos, *facing, self_kind, sensors);
-
-        match brain.act_on(inputs) {
-            Action::TurnLeft => {
-                if energy.decrement().is_deceased() {
+        match action {
+            Action::TurnLeft | Action::TurnRight => {
+                // Non-lethal turns (energy > 1 before decrement) were already applied in `decide_actions`.
+                // Only organisms whose energy was 1 (now dying on this turn) reach here with energy == 1.
+                if energy.0 == 1 && energy.decrement().is_deceased() {
                     spatial_grid.remove(*pos, entity, self_kind);
                     commands.entity(entity).despawn();
-                } else {
-                    *facing = facing.counterclockwise();
-                    age.increment();
-                }
-            }
-            Action::TurnRight => {
-                if energy.decrement().is_deceased() {
-                    spatial_grid.remove(*pos, entity, self_kind);
-                    commands.entity(entity).despawn();
-                } else {
-                    *facing = facing.clockwise();
-                    age.increment();
                 }
             }
             Action::GoForward => {
