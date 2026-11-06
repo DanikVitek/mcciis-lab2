@@ -17,6 +17,10 @@ pub use self::history::{
     SampleRate,
     SimulationHistory,
 };
+pub use self::organism::{
+    ActionCosts,
+    FoodValues,
+};
 use self::organism::{
     CharacterFilter,
     InitialEnergy,
@@ -130,6 +134,10 @@ pub struct SimulationPlugin {
     pub initial_energy: InitialEnergy,
     #[builder(into)]
     pub max_energy: MaxEnergy,
+    #[builder(default)]
+    pub action_costs: ActionCosts,
+    #[builder(default)]
+    pub food_values: FoodValues,
 }
 
 impl Plugin for SimulationPlugin {
@@ -139,6 +147,8 @@ impl Plugin for SimulationPlugin {
             .insert_resource(SpatialGrid::new(self.grid_size))
             .insert_resource(self.initial_energy)
             .insert_resource(self.max_energy)
+            .insert_resource(self.action_costs)
+            .insert_resource(self.food_values)
             .init_resource::<SimulationTickCount>()
             .add_plugins(DeferredSimulationPlugin)
             .add_systems(Startup, seed::seed_world);

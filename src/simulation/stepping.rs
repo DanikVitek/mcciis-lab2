@@ -10,6 +10,7 @@ use super::brain::{
     sense_brain_inputs,
 };
 use super::organism::{
+    ActionCosts,
     Age,
     Energy,
     EntityKind,
@@ -53,6 +54,7 @@ impl Plugin for SteppingPlugin {
 #[allow(clippy::type_complexity)]
 fn decide_actions(
     spatial_grid: Res<SpatialGrid>,
+    action_costs: Res<ActionCosts>,
     mut characters: Query<
         (
             &GridPosition,
@@ -67,6 +69,8 @@ fn decide_actions(
         Without<Plant>,
     >,
 ) {
+    let turn_cost = action_costs.turn;
+
     characters.par_iter_mut().for_each(
         |(pos, mut facing, mut energy, mut age, brain, sensors, mut action, is_herbivore)| {
             let self_kind = if is_herbivore {
@@ -80,32 +84,35 @@ fn decide_actions(
             // Apply non-lethal in-place turns directly in parallel so `apply_actions` only needs
             // to process movements, consumption, and lethal energy depletion.
             match chosen {
-                Action::TurnLeft if energy.0 > 1 => {
-                    let _ = energy.decrement();
+                Action::TurnLeft if energy.0 > turn_cost.0 => {
+                    let _ = energy.decrement(turn_cost);
                     *facing = facing.counterclockwise();
                     age.increment();
+                    action.0 = None;
                 }
-                Action::TurnRight if energy.0 > 1 => {
-                    let _ = energy.decrement();
+                Action::TurnRight if energy.0 > turn_cost.0 => {
+                    let _ = energy.decrement(turn_cost);
                     *facing = facing.clockwise();
                     age.increment();
+                    action.0 = None;
                 }
-                _ => {}
+                _ => {
+                    action.0 = Some(chosen);
+                }
             }
-
-            action.0 = Some(chosen);
         },
     );
 }
 
 /// Phase 2 (Sequential): Resolves movements, consumption, and lethal energy depletion that mutate
 /// [`SpatialGrid`] or other entities.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn apply_actions(
     mut commands: Commands,
     mut spatial_grid: ResMut<SpatialGrid>,
     field_size: Res<GridSize>,
     max_energy: Res<MaxEnergy>,
+    action_costs: Res<ActionCosts>,
     characters: Query<
         (
             Entity,
@@ -141,15 +148,15 @@ fn apply_actions(
 
         match action {
             Action::TurnLeft | Action::TurnRight => {
-                // Non-lethal turns (energy > 1 before decrement) were already applied in `decide_actions`.
-                // Only organisms whose energy was 1 (now dying on this turn) reach here with energy == 1.
-                if energy.0 == 1 && energy.decrement().is_deceased() {
+                // Non-lethal turns (`energy.0 > turn_cost.0`) were already applied in `decide_actions`.
+                // Only organisms whose remaining energy could not survive the turn cost reach here.
+                if energy.decrement(action_costs.turn).is_deceased() {
                     spatial_grid.remove(*pos, entity, self_kind);
                     commands.entity(entity).despawn();
                 }
             }
             Action::GoForward => {
-                if energy.decrement().is_deceased() {
+                if energy.decrement(action_costs.go_forward).is_deceased() {
                     spatial_grid.remove(*pos, entity, self_kind);
                     commands.entity(entity).despawn();
                 } else {
@@ -187,7 +194,9 @@ fn apply_actions(
 
                     let value = food.get(target_entity).unwrap();
                     energy.increment(*value, *max_energy);
-                } else if energy.decrement().is_deceased() {
+                }
+
+                if energy.decrement(action_costs.consume).is_deceased() {
                     spatial_grid.remove(*pos, entity, self_kind);
                     commands.entity(entity).despawn();
                     continue;

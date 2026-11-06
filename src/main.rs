@@ -27,10 +27,11 @@ use clap::{
 use itertools::iproduct;
 use life_sim::grid::GridSize;
 use life_sim::presentation::PresentationPlugin;
-use life_sim::presentation::pacing::SimulationSpeedMode;
-use life_sim::presentation::ui::config::SimConfig;
+use life_sim::presentation::ui::config::{
+    AutoSaveSettingsPath,
+    SimConfig,
+};
 use life_sim::simulation::organism::{
-    Energy,
     InitialEnergy,
     MaxEnergy,
 };
@@ -43,7 +44,6 @@ use life_sim::simulation::{
     HistoryRecorderPlugin,
     MutationStrategy,
     ReproductionPlugin,
-    ReproductionThreshold,
     SimulationHistory,
     SimulationPlugin,
     SimulationTick,
@@ -66,57 +66,39 @@ enum CliCommand {
     Headless(HeadlessArgs),
 }
 
-const DEFAULT_INITIAL_ENERGY: InitialEnergy = InitialEnergy(Energy(5));
-const DEFAULT_MAX_ENERGY: MaxEnergy = MaxEnergy(Energy(10));
-
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Default, Args)]
 struct VisualArgs {
     /// Grid width in tiles.
-    #[arg(long, default_value_t = 100)]
-    width: u16,
+    #[arg(long)]
+    width: Option<u16>,
 
     /// Grid height in tiles.
-    #[arg(long, default_value_t = 100)]
-    height: u16,
+    #[arg(long)]
+    height: Option<u16>,
 
     /// Initial fraction of tiles populated with plants (algae) [0.0..=1.0].
-    #[arg(long, default_value_t = 0.1)]
-    plants: f32,
+    #[arg(long)]
+    plants: Option<f32>,
 
     /// Initial fraction of tiles populated with herbivores [0.0..=1.0].
-    #[arg(long, default_value_t = 0.1)]
-    herbivores: f32,
+    #[arg(long)]
+    herbivores: Option<f32>,
 
     /// Initial fraction of tiles populated with predators [0.0..=1.0].
-    #[arg(long, default_value_t = 0.1)]
-    predators: f32,
+    #[arg(long)]
+    predators: Option<f32>,
 
     /// Initial energy of newly seeded organisms.
-    #[arg(long, default_value_t = DEFAULT_INITIAL_ENERGY)]
-    initial_energy: InitialEnergy,
+    #[arg(long)]
+    initial_energy: Option<InitialEnergy>,
 
     /// Maximum energy capacity of organisms.
-    #[arg(long, default_value_t = DEFAULT_MAX_ENERGY)]
-    max_energy: MaxEnergy,
+    #[arg(long)]
+    max_energy: Option<MaxEnergy>,
 
     /// Seconds per simulation tick in FixedStep mode.
-    #[arg(long, default_value_t = 0.5)]
-    tick_interval_secs: f64,
-}
-
-impl Default for VisualArgs {
-    fn default() -> Self {
-        Self {
-            width: 100,
-            height: 100,
-            plants: 0.1,
-            herbivores: 0.1,
-            predators: 0.1,
-            initial_energy: 5.into(),
-            max_energy: 10.into(),
-            tick_interval_secs: 0.5,
-        }
-    }
+    #[arg(long)]
+    tick_interval_secs: Option<f64>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -229,22 +211,41 @@ fn main() -> io::Result<()> {
 }
 
 fn run_visual(args: VisualArgs) {
-    let tick_interval = Duration::from_secs_f64(args.tick_interval_secs);
-    let prefilled_config = SimConfig {
-        grid_size: GridSize::new(args.width, args.height),
-        plants_fraction: args.plants,
-        herbivores_fraction: args.herbivores,
-        predators_fraction: args.predators,
-        initial_energy: args.initial_energy,
-        max_energy: args.max_energy,
-        reproduction_threshold: ReproductionThreshold::default(),
-        tick_interval,
-        speed_mode: SimulationSpeedMode::default(),
-        mutation: MutationStrategy::default(),
-    };
+    let mut prefilled_config = SimConfig::load_system_or_default();
+    if args.width.is_some() || args.height.is_some() {
+        let w = args
+            .width
+            .unwrap_or_else(|| prefilled_config.grid_size.width());
+        let h = args
+            .height
+            .unwrap_or_else(|| prefilled_config.grid_size.height());
+        prefilled_config.grid_size = GridSize::new(w, h);
+    }
+    if let Some(plants) = args.plants {
+        prefilled_config.plants_fraction = plants;
+    }
+    if let Some(herbivores) = args.herbivores {
+        prefilled_config.herbivores_fraction = herbivores;
+    }
+    if let Some(predators) = args.predators {
+        prefilled_config.predators_fraction = predators;
+    }
+    if let Some(initial_energy) = args.initial_energy {
+        prefilled_config.initial_energy = initial_energy;
+    }
+    if let Some(max_energy) = args.max_energy {
+        prefilled_config.max_energy = max_energy;
+    }
+    if let Some(secs) = args.tick_interval_secs {
+        prefilled_config.tick_interval = Duration::from_secs_f64(secs);
+    }
 
-    App::new()
-        .insert_resource(prefilled_config)
+    let tick_interval = prefilled_config.tick_interval;
+    let mut app = App::new();
+    if let Some(settings_path) = SimConfig::default_settings_path() {
+        app.insert_resource(AutoSaveSettingsPath(settings_path));
+    }
+    app.insert_resource(prefilled_config)
         .add_plugins((
             DefaultPlugins
                 .set(ImagePlugin::default_nearest())

@@ -4,21 +4,28 @@ use core::ops::Add;
 use core::str::FromStr;
 
 use bevy::prelude::*;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
-use super::brain::Brain;
+use super::brain::{
+    Action,
+    Brain,
+};
 
 /// Query filter matching any living character organism ([`Herbivore`] or [`Predator`]).
 pub type CharacterFilter = Or<(With<Herbivore>, With<Predator>)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
-#[require(ValueAsFood(1.into()))]
+#[require(ValueAsFood(1.0.into()))]
 #[component(immutable)]
 pub struct Plant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
 #[require(
     Age,
-    ValueAsFood(2.into()),
+    ValueAsFood(2.0.into()),
     Generation,
     Brain = rand::random::<Brain>(),
 )]
@@ -55,17 +62,24 @@ impl Age {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default, Component, Serialize, Deserialize)]
+#[serde(rename = "energy")]
 #[repr(transparent)]
-pub struct Energy(pub u8);
+pub struct Energy(pub f32);
 
-impl From<u8> for Energy {
-    fn from(value: u8) -> Self {
+impl From<f32> for Energy {
+    fn from(value: f32) -> Self {
         Self(value)
     }
 }
 
-impl From<Energy> for u8 {
+impl From<u8> for Energy {
+    fn from(value: u8) -> Self {
+        Self(f32::from(value))
+    }
+}
+
+impl From<Energy> for f32 {
     fn from(value: Energy) -> Self {
         value.0
     }
@@ -78,10 +92,10 @@ impl fmt::Display for Energy {
 }
 
 impl FromStr for Energy {
-    type Err = <u8 as FromStr>::Err;
+    type Err = <f32 as FromStr>::Err;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        u8::from_str(s).map(Self)
+        f32::from_str(s).map(Self)
     }
 }
 
@@ -93,19 +107,26 @@ impl Add for Energy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Resource)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Resource, Serialize, Deserialize)]
+#[serde(rename = "initial_energy")]
 #[repr(transparent)]
 pub struct InitialEnergy(pub Energy);
 
 impl Default for InitialEnergy {
     fn default() -> Self {
-        5.into()
+        5.0.into()
     }
 }
 
 impl From<Energy> for InitialEnergy {
     fn from(value: Energy) -> Self {
         Self(value)
+    }
+}
+
+impl From<f32> for InitialEnergy {
+    fn from(value: f32) -> Self {
+        Self(value.into())
     }
 }
 
@@ -135,13 +156,20 @@ impl FromStr for InitialEnergy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Resource)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Resource, Serialize, Deserialize)]
+#[serde(rename = "max_energy")]
 #[repr(transparent)]
 pub struct MaxEnergy(pub Energy);
 
 impl Default for MaxEnergy {
     fn default() -> Self {
-        10.into()
+        10.0.into()
+    }
+}
+
+impl From<f32> for MaxEnergy {
+    fn from(value: f32) -> Self {
+        Self(value.into())
     }
 }
 
@@ -171,6 +199,79 @@ impl FromStr for MaxEnergy {
     }
 }
 
+/// Configurable energy costs for organism actions during [`SimulationSystems::Step`](super::SimulationSystems::Step).
+#[derive(
+    Debug, Clone, Copy, PartialEq, PartialOrd, Resource, Serialize, Deserialize, bon::Builder,
+)]
+#[serde(rename = "action_costs", rename_all = "snake_case", default)]
+pub struct ActionCosts {
+    /// Energy cost for [`Action::TurnLeft`] and [`Action::TurnRight`].
+    #[builder(into, default = Energy(1.0))]
+    pub turn: Energy,
+    /// Energy cost for [`Action::GoForward`].
+    #[builder(into, default = Energy(1.0))]
+    pub go_forward: Energy,
+    /// Energy cost for [`Action::Consume`].
+    #[builder(into, default = Energy(1.0))]
+    pub consume: Energy,
+}
+
+impl Default for ActionCosts {
+    fn default() -> Self {
+        Self {
+            turn: Energy(1.0),
+            go_forward: Energy(1.0),
+            consume: Energy(1.0),
+        }
+    }
+}
+
+impl ActionCosts {
+    #[must_use]
+    pub const fn cost_of(self, action: Action) -> Energy {
+        match action {
+            Action::TurnLeft | Action::TurnRight => self.turn,
+            Action::GoForward => self.go_forward,
+            Action::Consume => self.consume,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        self.turn.0 >= 0.0 && self.go_forward.0 >= 0.0 && self.consume.0 >= 0.0
+    }
+}
+
+/// Configurable nutritional energy values gained when consuming [`Plant`]s or [`Herbivore`]s.
+#[derive(
+    Debug, Clone, Copy, PartialEq, PartialOrd, Resource, Serialize, Deserialize, bon::Builder,
+)]
+#[serde(rename = "food_values", rename_all = "snake_case", default)]
+pub struct FoodValues {
+    /// Energy gained by a [`Herbivore`] when consuming a [`Plant`].
+    #[builder(into, default = Energy(1.0))]
+    pub plant: Energy,
+    /// Energy gained by a [`Predator`] when consuming a [`Herbivore`].
+    #[builder(into, default = Energy(2.0))]
+    pub herbivore: Energy,
+}
+
+impl Default for FoodValues {
+    fn default() -> Self {
+        Self {
+            plant: Energy(1.0),
+            herbivore: Energy(2.0),
+        }
+    }
+}
+
+impl FoodValues {
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        self.plant.0 >= 0.0 && self.herbivore.0 >= 0.0
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[must_use]
 pub struct DecrementResult<T> {
@@ -197,40 +298,42 @@ impl<T> DecrementResult<T> {
 }
 
 impl Energy {
+    #[must_use]
     pub fn saturating_add(self, rhs: Self) -> Self {
-        Self(self.0.saturating_add(rhs.0))
+        Self(self.0 + rhs.0)
     }
 
+    #[must_use]
     pub fn saturating_sub(self, rhs: Self) -> Self {
-        Self(self.0.saturating_sub(rhs.0))
+        Self((self.0 - rhs.0).max(0.0))
     }
 
     pub fn increment(&mut self, ValueAsFood(value): ValueAsFood, MaxEnergy(max): MaxEnergy) {
-        *self = Ord::min(max, self.saturating_add(value));
+        self.0 = (self.0 + value.0).min(max.0);
     }
 
-    pub fn decrement(&mut self) -> DecrementResult<()> {
-        *self = self.saturating_sub(1.into());
+    pub fn decrement(&mut self, cost: Energy) -> DecrementResult<()> {
+        *self = self.saturating_sub(cost);
 
         DecrementResult {
             value: (),
-            deceased: self.0 == 0,
+            deceased: self.0 <= 0.0,
         }
     }
 
     pub fn distribute(&mut self) -> DecrementResult<Energy> {
-        let start = self.0;
-        self.0 /= 2;
-        let child_energy = Self(start - self.0);
+        let half = self.0 * 0.5;
+        self.0 = half;
 
         DecrementResult {
-            value: child_energy,
-            deceased: self.0 == 0,
+            value: Self(half),
+            deceased: self.0 <= 0.0,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Component, Serialize, Deserialize)]
+#[serde(rename = "value_as_food")]
 #[repr(transparent)]
 pub struct ValueAsFood(pub Energy);
 

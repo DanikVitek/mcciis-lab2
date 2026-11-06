@@ -1,6 +1,10 @@
 use std::time::Duration;
 
 use bevy::prelude::*;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use crate::simulation::{
     SimulationTick,
@@ -28,7 +32,8 @@ pub enum SimulationPlaybackState {
 }
 
 /// Controls how [`SimulationTick`] is paced while [`SimulationPlaybackState::Running`] is active.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Resource)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Resource, Serialize, Deserialize)]
+#[serde(rename = "simulation_speed_mode", rename_all = "snake_case")]
 pub enum SimulationSpeedMode {
     /// Runs [`SimulationTick`] on Bevy's `FixedUpdate` schedule using [`Time<Fixed>`].
     #[default]

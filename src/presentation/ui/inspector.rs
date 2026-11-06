@@ -413,7 +413,7 @@ fn render_pov_panel_contents(
         ui.label(egui::RichText::new(format!("Gen {}", snapshot.generation.number())).monospace());
         ui.label(egui::RichText::new(format!("Age {}", snapshot.age.ticks())).monospace());
         if let Some(food) = snapshot.value_as_food {
-            ui.label(egui::RichText::new(format!("Food Val {}", food.0)).monospace());
+            ui.label(egui::RichText::new(format!("Food Val {:.1}", food.0.0)).monospace());
         }
         ui.label(
             egui::RichText::new(format!(
@@ -425,28 +425,20 @@ fn render_pov_panel_contents(
     });
 
     let energy_cur = snapshot.energy;
-    let energy_frac = f32::from(energy_cur.0) / f32::from(max_energy.0.0);
+    let energy_frac = (energy_cur.0 / max_energy.0.0.max(f32::EPSILON)).clamp(0.0, 1.0);
     ui.add_space(2.0);
     ui.add(
         egui::ProgressBar::new(energy_frac)
             .fill(egui::Color32::from_rgb(55, 165, 225))
             .text(format!(
-                "Energy: {} / {} (-1/tick{})",
-                energy_cur,
-                max_energy,
+                "Energy: {:.1} / {:.1}{}",
+                energy_cur.0,
+                max_energy.0.0,
                 fmt::from_fn(|f| {
                     let Some(threshold) = repro_threshold else {
                         return Ok(());
                     };
-                    write!(f, ", repro ≥ ")?;
-                    match threshold {
-                        ReproductionThreshold::Absolute(ref threshold) => {
-                            fmt::Display::fmt(threshold, f)
-                        }
-                        ReproductionThreshold::Relative(fraction) => {
-                            fmt::Display::fmt(&(max_energy.0.0 as f32 * fraction), f)
-                        }
-                    }
+                    write!(f, " (repro ≥ {:.1})", threshold.min_energy(max_energy).0)
                 })
             )),
     );

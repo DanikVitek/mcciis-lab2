@@ -17,6 +17,10 @@ use rand::{
     Rng,
     RngExt,
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component, Deref, DerefMut)]
 #[repr(transparent)]
@@ -78,7 +82,32 @@ impl GridPosition {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource, Deref, DerefMut)]
+#[derive(Serialize, Deserialize)]
+#[serde(rename = "grid_size", rename_all = "snake_case")]
+struct GridSizeRepr {
+    width: u16,
+    height: u16,
+}
+
+impl From<GridSize> for GridSizeRepr {
+    fn from(size: GridSize) -> Self {
+        Self {
+            width: size.width(),
+            height: size.height(),
+        }
+    }
+}
+
+impl From<GridSizeRepr> for GridSize {
+    fn from(repr: GridSizeRepr) -> Self {
+        Self::new(repr.width, repr.height)
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Resource, Deref, DerefMut, Serialize, Deserialize,
+)]
+#[serde(from = "GridSizeRepr", into = "GridSizeRepr")]
 pub struct GridSize(pub U16Vec2);
 
 impl Default for GridSize {

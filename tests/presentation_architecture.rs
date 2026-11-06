@@ -28,7 +28,10 @@ use life_sim::presentation::sprites::{
     grid_to_world_xy,
 };
 use life_sim::presentation::ui::HistoryPlotOpen;
-use life_sim::presentation::ui::config::SimConfig;
+use life_sim::presentation::ui::config::{
+    AutoSaveSettingsPath,
+    SimConfig,
+};
 use life_sim::presentation::ui::inspector::{
     BrainInspectorUiPlugin,
     CharacterInspector,
@@ -42,13 +45,16 @@ use life_sim::presentation::{
     SimulationSpeedMode,
 };
 use life_sim::simulation::organism::{
+    ActionCosts,
     CharacterFilter,
     Energy,
+    FoodValues,
     Herbivore,
     InitialEnergy,
     MaxEnergy,
     Plant,
     Predator,
+    ValueAsFood,
 };
 use life_sim::simulation::spatial::SpatialGrid;
 use life_sim::simulation::{
@@ -62,6 +68,7 @@ use life_sim::simulation::{
     SimulationHistory,
     SimulationPlugin,
     SimulationTickCount,
+    SingleNeuronMutation,
 };
 
 /// Builds a headless Bevy [`App`] with the full [`PresentationPlugin`] (`SimulationPacingPlugin`,
@@ -127,6 +134,8 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
     assert!(!app.world().contains_resource::<InitialEnergy>());
     assert!(!app.world().contains_resource::<MaxEnergy>());
     assert!(!app.world().contains_resource::<ReproductionThreshold>());
+    assert!(!app.world().contains_resource::<ActionCosts>());
+    assert!(!app.world().contains_resource::<FoodValues>());
     assert!(!app.world().contains_resource::<SimulationTickCount>());
     assert!(app.world().resource::<SimulationHistory>().is_empty());
 
@@ -148,15 +157,26 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
 
     // Edit staged `SimConfig` and accept it by transitioning `AppState` to `AppState::Simulation`.
     let custom_size = GridSize::new(20, 10);
+    let custom_costs = ActionCosts {
+        turn: Energy(0.25),
+        go_forward: Energy(1.5),
+        consume: Energy(0.5),
+    };
+    let custom_food = FoodValues {
+        plant: Energy(2.5),
+        herbivore: Energy(6.0),
+    };
     {
         let mut config = app.world_mut().resource_mut::<SimConfig>();
         config.grid_size = custom_size;
         config.plants_fraction = 0.25;
         config.herbivores_fraction = 0.10;
         config.predators_fraction = 0.05;
-        config.initial_energy = 12.into();
-        config.max_energy = 24.into();
-        config.reproduction_threshold = ReproductionThreshold::Absolute(Energy(18));
+        config.initial_energy = 12.0.into();
+        config.max_energy = 24.0.into();
+        config.reproduction_threshold = ReproductionThreshold::Absolute(Energy(18.0));
+        config.action_costs = custom_costs;
+        config.food_values = custom_food;
     }
 
     app.world_mut()
@@ -176,12 +196,14 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         SimulationPlaybackState::Running
     );
     assert_eq!(*app.world().resource::<GridSize>(), custom_size);
-    assert_eq!(*app.world().resource::<InitialEnergy>(), 12.into());
-    assert_eq!(*app.world().resource::<MaxEnergy>(), 24.into());
+    assert_eq!(*app.world().resource::<InitialEnergy>(), 12.0.into());
+    assert_eq!(*app.world().resource::<MaxEnergy>(), 24.0.into());
     assert_eq!(
         *app.world().resource::<ReproductionThreshold>(),
-        ReproductionThreshold::Absolute(Energy(18))
+        ReproductionThreshold::Absolute(Energy(18.0))
     );
+    assert_eq!(*app.world().resource::<ActionCosts>(), custom_costs);
+    assert_eq!(*app.world().resource::<FoodValues>(), custom_food);
     assert_eq!(app.world().resource::<SimulationTickCount>().0, 0);
 
     let totals = app.world().resource::<SpatialGrid>().total_counts();
@@ -208,10 +230,18 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         );
 
         let plant_sprites = world
-            .query_filtered::<Entity, (With<Plant>, With<Sprite>)>()
+            .query_filtered::<&ValueAsFood, (With<Plant>, With<Sprite>)>()
             .iter(world)
+            .inspect(|food| assert_eq!(food.0, custom_food.plant))
             .count();
         assert_eq!(plant_sprites, 50);
+
+        let herbivore_food_count = world
+            .query_filtered::<&ValueAsFood, With<Herbivore>>()
+            .iter(world)
+            .inspect(|food| assert_eq!(food.0, custom_food.herbivore))
+            .count();
+        assert_eq!(herbivore_food_count, 20);
 
         let character_sprites = world
             .query_filtered::<Entity, (
@@ -305,8 +335,8 @@ fn presentation_hotkeys_and_playback_pacing_control_simulation_ticks() {
         config.plants_fraction = 0.2;
         config.herbivores_fraction = 0.2;
         config.predators_fraction = 0.0;
-        config.initial_energy = 50.into();
-        config.max_energy = 100.into();
+        config.initial_energy = 50.0.into();
+        config.max_energy = 100.0.into();
         config.speed_mode = SimulationSpeedMode::Uncapped;
     }
     app.world_mut()
@@ -445,7 +475,7 @@ fn brain_inspector_reads_snapshot_and_clears_on_character_death() {
             let snap = inspector.snapshot()?;
 
             assert_eq!(snap.entity, second_selected);
-            assert_eq!(snap.energy, Energy(50));
+            assert_eq!(snap.energy, Energy(50.0));
             assert_eq!(snap.generation.number(), 1);
             assert_eq!(inspector.pick_random_character(), Some(first_selected));
             Some(())
@@ -458,4 +488,82 @@ fn brain_inspector_reads_snapshot_and_clears_on_character_death() {
     app.world_mut().flush();
 
     assert_eq!(app.world().resource::<InspectedCharacter>().0, None);
+}
+
+#[test]
+fn sim_config_saves_loads_and_auto_saves_on_change() {
+    let temp_path = std::env::temp_dir().join(format!(
+        "life_sim_test_settings_{}.toml",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&temp_path);
+
+    let mut app = build_headless_presentation_app();
+    app.insert_resource(AutoSaveSettingsPath(temp_path.clone()));
+    app.update();
+
+    let expected = {
+        let mut config = app.world_mut().resource_mut::<SimConfig>();
+        config.grid_size = GridSize::new(64, 48);
+        config.plants_fraction = 0.3;
+        config.herbivores_fraction = 0.15;
+        config.predators_fraction = 0.05;
+        config.initial_energy = Energy(7.5).into();
+        config.max_energy = Energy(15.0).into();
+        config.reproduction_threshold = ReproductionThreshold::Absolute(Energy(11.25));
+        config.action_costs = ActionCosts {
+            turn: Energy(0.2),
+            go_forward: Energy(0.8),
+            consume: Energy(1.2),
+        };
+        config.food_values = FoodValues {
+            plant: Energy(1.75),
+            herbivore: Energy(4.5),
+        };
+        config.speed_mode = SimulationSpeedMode::Uncapped;
+        *config
+    };
+
+    // Running `app.update()` runs `PostUpdate` (`auto_save_settings_system`), persisting `SimConfig`.
+    app.update();
+
+    let raw_toml = std::fs::read_to_string(&temp_path).expect("read auto-saved TOML");
+    assert!(raw_toml.contains("speed_mode = \"uncapped\""), "{raw_toml}");
+    assert!(raw_toml.contains("absolute = 11.25"), "{raw_toml}");
+    assert!(raw_toml.contains("[mutation.distributed]"), "{raw_toml}");
+    assert!(
+        !raw_toml.chars().any(char::is_uppercase),
+        "expected all serialized keys and variants to be snake_case:\n{raw_toml}"
+    );
+
+    let loaded = SimConfig::load_from_path(&temp_path).expect("loaded auto-saved settings");
+    assert_eq!(loaded, expected);
+
+    // Also verify `SingleNeuron`, `Relative`, and `FixedStep` variants serialize in snake_case and round-trip.
+    let mut alt = expected;
+    alt.speed_mode = SimulationSpeedMode::FixedStep;
+    alt.reproduction_threshold = ReproductionThreshold::Relative(0.75);
+    alt.mutation = MutationStrategy::SingleNeuron(SingleNeuronMutation);
+    alt.save_to_path(&temp_path)
+        .expect("saved single_neuron config");
+
+    let alt_toml = std::fs::read_to_string(&temp_path).expect("read single_neuron TOML");
+    assert!(
+        alt_toml.contains("speed_mode = \"fixed_step\""),
+        "{alt_toml}"
+    );
+    assert!(alt_toml.contains("relative = 0.75"), "{alt_toml}");
+    assert!(
+        alt_toml.contains("mutation = \"single_neuron\""),
+        "{alt_toml}"
+    );
+    assert!(
+        !alt_toml.chars().any(char::is_uppercase),
+        "expected all serialized keys and variants to be snake_case:\n{alt_toml}"
+    );
+
+    let loaded_alt = SimConfig::load_from_path(&temp_path).expect("loaded single_neuron config");
+    assert_eq!(loaded_alt, alt);
+
+    let _ = std::fs::remove_file(&temp_path);
 }

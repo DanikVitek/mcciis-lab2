@@ -4,13 +4,19 @@ use itertools::Itertools;
 use rand::RngExt;
 use rand::distr::Distribution;
 use rand::seq::WeightError;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use super::organism::{
     EntityKind,
+    FoodValues,
     Herbivore,
     InitialEnergy,
     Plant,
     Predator,
+    ValueAsFood,
 };
 use super::spatial::SpatialGrid;
 use super::{
@@ -29,7 +35,8 @@ use crate::simulation::brain::{
 };
 use crate::simulation::organism::Energy;
 
-#[derive(Debug, Clone, Copy, PartialEq, Resource)]
+#[derive(Debug, Clone, Copy, PartialEq, Resource, Serialize, Deserialize)]
+#[serde(rename = "distribution_config", rename_all = "snake_case")]
 pub struct DistributionConfig {
     plants_fraction: f32,
     herbivores_fraction: f32,
@@ -98,7 +105,9 @@ pub(super) fn seed_world(
     field_size: Res<GridSize>,
     config: Res<DistributionConfig>,
     initial_energy: Res<InitialEnergy>,
+    food_values: Option<Res<FoodValues>>,
 ) {
+    let food = food_values.as_deref().copied().unwrap_or_default();
     spatial_grid.resize_and_clear(*field_size);
     populate_grid(
         &mut commands,
@@ -106,11 +115,12 @@ pub(super) fn seed_world(
         *field_size,
         *config,
         *initial_energy,
+        food,
     );
     commands.trigger(WorldSeeded);
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn on_reset_simulation(
     _reset: On<ResetSimulation>,
     mut commands: Commands,
@@ -119,7 +129,9 @@ pub(super) fn on_reset_simulation(
     field_size: Res<GridSize>,
     config: Res<DistributionConfig>,
     initial_energy: Res<InitialEnergy>,
+    food_values: Option<Res<FoodValues>>,
 ) {
+    let food = food_values.as_deref().copied().unwrap_or_default();
     commands.despawn_all::<Or<(With<Plant>, With<Herbivore>, With<Predator>)>>();
     tick_count.0 = 0;
     spatial_grid.resize_and_clear(*field_size);
@@ -129,6 +141,7 @@ pub(super) fn on_reset_simulation(
         *field_size,
         *config,
         *initial_energy,
+        food,
     );
     commands.trigger(WorldSeeded);
 }
@@ -139,6 +152,7 @@ fn populate_grid(
     field_size: GridSize,
     config: DistributionConfig,
     initial_energy: InitialEnergy,
+    food_values: FoodValues,
 ) {
     let tiles_total = u32::from(field_size.width()) * u32::from(field_size.height());
 
@@ -180,7 +194,9 @@ fn populate_grid(
             }
             PLANT => {
                 let pos = GridPosition::new(x, y);
-                let entity = commands.spawn((Plant, pos)).id();
+                let entity = commands
+                    .spawn((Plant, pos, ValueAsFood(food_values.plant)))
+                    .id();
                 spatial_grid.insert(pos, entity, EntityKind::Plant);
                 plants_total -= 1;
                 match dist.update_weights(&[(1, &plants_total)]) {
@@ -200,6 +216,7 @@ fn populate_grid(
                                 pos,
                                 dir,
                                 Energy::from(initial_energy),
+                                ValueAsFood(food_values.herbivore),
                                 SENSORS_HERBIVORE.to_owned(),
                             ))
                             .id();

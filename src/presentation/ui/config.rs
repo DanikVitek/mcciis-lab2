@@ -1,4 +1,8 @@
 use core::num::NonZeroU64;
+use std::path::{
+    Path,
+    PathBuf,
+};
 use std::time::Duration;
 
 use bevy::ecs::system::SystemParam;
@@ -10,6 +14,10 @@ use bevy_egui::egui::{
 use bevy_egui::{
     EguiContexts,
     EguiPrimaryContextPass,
+};
+use serde::{
+    Deserialize,
+    Serialize,
 };
 
 use super::inspector::{
@@ -28,9 +36,14 @@ use crate::presentation::pacing::{
 };
 use crate::simulation::history::SampleRate;
 use crate::simulation::organism::{
+    ActionCosts,
     Energy,
+    FoodValues,
+    Herbivore,
     InitialEnergy,
     MaxEnergy,
+    Plant,
+    ValueAsFood,
 };
 use crate::simulation::spatial::SpatialGrid;
 use crate::simulation::{
@@ -45,8 +58,17 @@ use crate::simulation::{
     StepSimulationOnce,
 };
 
+/// Optional resource holding the filesystem path where [`SimConfig`] is automatically saved on change.
+#[derive(Debug, Clone, PartialEq, Eq, Resource)]
+pub struct AutoSaveSettingsPath(pub PathBuf);
+
 /// Staged form state edited by the configuration UI before applying changes to live resources.
-#[derive(Debug, Clone, Copy, PartialEq, Resource)]
+#[derive(Debug, Clone, Copy, PartialEq, Resource, Serialize, Deserialize)]
+#[serde(
+    rename = "sim_config",
+    rename_all = "snake_case",
+    default = "SimConfig::default_values"
+)]
 pub struct SimConfig {
     pub grid_size: GridSize,
     pub plants_fraction: f32,
@@ -55,24 +77,26 @@ pub struct SimConfig {
     pub initial_energy: InitialEnergy,
     pub max_energy: MaxEnergy,
     pub reproduction_threshold: ReproductionThreshold,
+    pub action_costs: ActionCosts,
+    pub food_values: FoodValues,
     pub tick_interval: Duration,
     pub speed_mode: SimulationSpeedMode,
     pub mutation: MutationStrategy,
 }
 
 impl Numeric for Energy {
-    const INTEGRAL: bool = true;
+    const INTEGRAL: bool = false;
 
-    const MIN: Self = Self(u8::MIN);
+    const MIN: Self = Self(0.0);
 
-    const MAX: Self = Self(u8::MAX);
+    const MAX: Self = Self(f32::MAX);
 
     fn to_f64(self) -> f64 {
-        self.0 as f64
+        f64::from(self.0)
     }
 
     fn from_f64(num: f64) -> Self {
-        Self(num as u8)
+        Self(num as f32)
     }
 }
 
@@ -141,6 +165,14 @@ impl FromWorld for SimConfig {
             .get_resource::<ReproductionThreshold>()
             .copied()
             .unwrap_or_default();
+        let action_costs = world
+            .get_resource::<ActionCosts>()
+            .copied()
+            .unwrap_or_default();
+        let food_values = world
+            .get_resource::<FoodValues>()
+            .copied()
+            .unwrap_or_default();
 
         Self {
             grid_size,
@@ -150,6 +182,8 @@ impl FromWorld for SimConfig {
             initial_energy,
             max_energy,
             reproduction_threshold,
+            action_costs,
+            food_values,
             tick_interval,
             speed_mode,
             mutation,
@@ -158,6 +192,59 @@ impl FromWorld for SimConfig {
 }
 
 impl SimConfig {
+    /// Returns the baseline default configuration values without requiring a [`World`].
+    #[must_use]
+    pub fn default_values() -> Self {
+        let dist = DistributionConfig::default();
+        Self {
+            grid_size: GridSize::default(),
+            plants_fraction: dist.plants_fraction(),
+            herbivores_fraction: dist.herbivores_fraction(),
+            predators_fraction: dist.predators_fraction(),
+            initial_energy: InitialEnergy::default(),
+            max_energy: MaxEnergy::default(),
+            reproduction_threshold: ReproductionThreshold::default(),
+            action_costs: ActionCosts::default(),
+            food_values: FoodValues::default(),
+            tick_interval: Duration::from_secs_f64(0.5),
+            speed_mode: SimulationSpeedMode::default(),
+            mutation: MutationStrategy::default(),
+        }
+    }
+
+    /// Returns the default OS configuration file path for persisting settings across restarts.
+    #[must_use]
+    pub fn default_settings_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|dir| dir.join("life-sim").join("settings.toml"))
+    }
+
+    /// Serializes and writes this configuration as TOML to `path`, creating parent directories if needed.
+    pub fn save_to_path(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let contents =
+            toml::to_string_pretty(self).map_err(|err| std::io::Error::other(err.to_string()))?;
+        std::fs::write(path, contents)
+    }
+
+    /// Reads and deserializes a [`SimConfig`] from a TOML file at `path`.
+    pub fn load_from_path(path: &Path) -> std::io::Result<Self> {
+        let contents = std::fs::read_to_string(path)?;
+        toml::from_str(&contents)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
+    }
+
+    /// Loads the saved configuration from [`Self::default_settings_path`], or falls back to [`Self::default_values`].
+    #[must_use]
+    pub fn load_system_or_default() -> Self {
+        Self::default_settings_path()
+            .and_then(|path| Self::load_from_path(&path).ok())
+            .unwrap_or_else(Self::default_values)
+    }
+
     /// Applies live playback pacing changes (`tick_interval` and `speed_mode`) without resetting the world.
     pub fn apply_pacing(&self, fixed_time: &mut Time<Fixed>, speed_mode: &mut SimulationSpeedMode) {
         fixed_time.set_timestep(self.tick_interval);
@@ -186,6 +273,8 @@ impl SimConfig {
         commands.insert_resource(self.initial_energy);
         commands.insert_resource(self.max_energy);
         commands.insert_resource(self.reproduction_threshold);
+        commands.insert_resource(self.action_costs);
+        commands.insert_resource(self.food_values);
         commands.insert_resource(SimulationTickCount::default());
         commands.trigger(ResetSimulation);
         Ok(())
@@ -218,6 +307,31 @@ struct LiveLifecycleResources<'w> {
     max_energy: ResMut<'w, MaxEnergy>,
     reproduction_threshold: Option<ResMut<'w, ReproductionThreshold>>,
     mutation_strategy: Option<ResMut<'w, MutationStrategy>>,
+    action_costs: Option<ResMut<'w, ActionCosts>>,
+    food_values: Option<ResMut<'w, FoodValues>>,
+}
+
+impl LiveLifecycleResources<'_> {
+    fn sync_food_values(&mut self, food_values: FoodValues) {
+        if let Some(ref mut res) = self.food_values {
+            **res = food_values;
+        }
+    }
+
+    fn sync_all_from_config(&mut self, config: &SimConfig) {
+        *self.initial_energy = config.initial_energy;
+        *self.max_energy = config.max_energy;
+        if let Some(ref mut repro) = self.reproduction_threshold {
+            **repro = config.reproduction_threshold;
+        }
+        if let Some(ref mut mutation) = self.mutation_strategy {
+            **mutation = config.mutation;
+        }
+        if let Some(ref mut costs) = self.action_costs {
+            **costs = config.action_costs;
+        }
+        self.sync_food_values(config.food_values);
+    }
 }
 
 /// Helper commands for playback controls (Pause / Resume / Step Once) from UI widgets or hotkeys.
@@ -251,7 +365,46 @@ impl Plugin for SimConfigUiPlugin {
                     render_initial_setup_ui.run_if(in_state(AppState::Setup)),
                     render_config_ui.run_if(in_state(AppState::Simulation)),
                 ),
+            )
+            .add_systems(
+                PostUpdate,
+                (
+                    sync_food_values_to_entities.run_if(in_state(AppState::Simulation)),
+                    auto_save_settings_system,
+                ),
             );
+    }
+}
+
+fn sync_food_values_to_entities(
+    food_values: Option<Res<FoodValues>>,
+    mut plants: Query<&mut ValueAsFood, (With<Plant>, Without<Herbivore>)>,
+    mut herbivores: Query<&mut ValueAsFood, (With<Herbivore>, Without<Plant>)>,
+) {
+    if let Some(values) = food_values
+        && values.is_changed()
+    {
+        for mut food in &mut plants {
+            food.0 = values.plant;
+        }
+        for mut food in &mut herbivores {
+            food.0 = values.herbivore;
+        }
+    }
+}
+
+fn auto_save_settings_system(
+    config: Res<SimConfig>,
+    auto_save_path: Option<Res<AutoSaveSettingsPath>>,
+) {
+    if let Some(path) = auto_save_path
+        && config.is_changed()
+        && let Err(err) = config.save_to_path(&path.0)
+    {
+        warn!(
+            "Failed to auto-save settings to {}: {err}",
+            path.0.display()
+        );
     }
 }
 
@@ -283,7 +436,7 @@ fn render_reproduction_threshold_controls(ui: &mut egui::Ui, config: &mut SimCon
         }
         if ui.selectable_label(!is_relative, "Absolute").clicked() && is_relative {
             let abs = config.reproduction_threshold.min_energy(config.max_energy);
-            config.reproduction_threshold = ReproductionThreshold::Absolute(Energy(abs.0.max(1)));
+            config.reproduction_threshold = ReproductionThreshold::Absolute(Energy(abs.0.max(0.1)));
             changed = true;
         }
     });
@@ -305,7 +458,9 @@ fn render_reproduction_threshold_controls(ui: &mut egui::Ui, config: &mut SimCon
             if ui
                 .add(
                     egui::DragValue::new(energy)
-                        .range(1..=u8::MAX)
+                        .range(0.1..=10_000.0)
+                        .speed(0.1)
+                        .fixed_decimals(1)
                         .prefix("Energy ≥ "),
                 )
                 .changed()
@@ -316,6 +471,137 @@ fn render_reproduction_threshold_controls(ui: &mut egui::Ui, config: &mut SimCon
     }
 
     changed
+}
+
+fn render_action_economy_controls(ui: &mut egui::Ui, config: &mut SimConfig) -> (bool, bool) {
+    let mut costs_changed = false;
+    let mut food_changed = false;
+
+    ui.label(
+        egui::RichText::new("Action Economy & Food")
+            .color(egui::Color32::from_rgb(170, 215, 255))
+            .strong(),
+    );
+    ui.add_space(4.0);
+
+    egui::Grid::new(ui.id().with("action_economy_grid"))
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("Turn cost:");
+            if ui
+                .add(
+                    egui::DragValue::new(&mut config.action_costs.turn)
+                        .range(0.0..=1000.0)
+                        .speed(0.1)
+                        .fixed_decimals(2),
+                )
+                .changed()
+            {
+                costs_changed = true;
+            }
+            ui.end_row();
+
+            ui.label("Move forward cost:");
+            if ui
+                .add(
+                    egui::DragValue::new(&mut config.action_costs.go_forward)
+                        .range(0.0..=1000.0)
+                        .speed(0.1)
+                        .fixed_decimals(2),
+                )
+                .changed()
+            {
+                costs_changed = true;
+            }
+            ui.end_row();
+
+            ui.label("Consume cost:");
+            if ui
+                .add(
+                    egui::DragValue::new(&mut config.action_costs.consume)
+                        .range(0.0..=1000.0)
+                        .speed(0.1)
+                        .fixed_decimals(2),
+                )
+                .changed()
+            {
+                costs_changed = true;
+            }
+            ui.end_row();
+
+            ui.label("Algae food value:");
+            if ui
+                .add(
+                    egui::DragValue::new(&mut config.food_values.plant)
+                        .range(0.0..=1000.0)
+                        .speed(0.1)
+                        .fixed_decimals(2),
+                )
+                .changed()
+            {
+                food_changed = true;
+            }
+            ui.end_row();
+
+            ui.label("Herbivore food value:");
+            if ui
+                .add(
+                    egui::DragValue::new(&mut config.food_values.herbivore)
+                        .range(0.0..=1000.0)
+                        .speed(0.1)
+                        .fixed_decimals(2),
+                )
+                .changed()
+            {
+                food_changed = true;
+            }
+            ui.end_row();
+        });
+
+    (costs_changed, food_changed)
+}
+
+fn configured_file_dialog() -> rfd::FileDialog {
+    let dialog = rfd::FileDialog::new()
+        .add_filter("TOML Settings", &["toml"])
+        .set_file_name("settings.toml");
+    if let Some(default_path) = SimConfig::default_settings_path()
+        && let Some(parent) = default_path.parent()
+    {
+        let _ = std::fs::create_dir_all(parent);
+        if parent.exists() {
+            return dialog.set_directory(parent);
+        }
+    }
+    dialog
+}
+
+fn render_settings_persistence_controls(ui: &mut egui::Ui, config: &mut SimConfig) -> bool {
+    let mut loaded_new_config = false;
+    ui.horizontal(|ui| {
+        if ui.button("💾 Save Settings...").clicked()
+            && let Some(path) = configured_file_dialog().save_file()
+            && let Err(err) = config.save_to_path(&path)
+        {
+            warn!("Failed to save settings to {}: {err}", path.display());
+        }
+
+        if ui.button("📂 Load Settings...").clicked()
+            && let Some(path) = configured_file_dialog().pick_file()
+        {
+            match SimConfig::load_from_path(&path) {
+                Ok(loaded) => {
+                    *config = loaded;
+                    loaded_new_config = true;
+                }
+                Err(err) => {
+                    warn!("Failed to load settings from {}: {err}", path.display());
+                }
+            }
+        }
+    });
+    loaded_new_config
 }
 
 fn render_initial_setup_ui(
@@ -347,7 +633,10 @@ fn render_initial_setup_ui(
                 egui::RichText::new("Configure parameters for the initial run before starting.")
                     .color(egui::Color32::from_rgb(175, 205, 235)),
             );
-            ui.add_space(8.0);
+            ui.add_space(6.0);
+            render_settings_persistence_controls(ui, &mut config);
+            ui.add_space(6.0);
+            ui.separator();
 
             // --- 1. World & Seeding Configuration ---
             ui.label(
@@ -425,13 +714,23 @@ fn render_initial_setup_ui(
 
             ui.horizontal(|ui| {
                 ui.label("Initial energy:");
-                ui.add(egui::DragValue::new(&mut config.initial_energy).range(1..=u8::MAX));
+                ui.add(
+                    egui::DragValue::new(&mut config.initial_energy)
+                        .range(0.1..=10_000.0)
+                        .speed(0.1)
+                        .fixed_decimals(1),
+                );
             });
             ui.add_space(2.0);
 
             ui.horizontal(|ui| {
                 ui.label("Max energy:");
-                ui.add(egui::DragValue::new(&mut config.max_energy).range(1..=u8::MAX));
+                ui.add(
+                    egui::DragValue::new(&mut config.max_energy)
+                        .range(0.1..=10_000.0)
+                        .speed(0.1)
+                        .fixed_decimals(1),
+                );
             });
             ui.add_space(2.0);
 
@@ -499,6 +798,12 @@ fn render_initial_setup_ui(
                         .fixed_decimals(2),
                 );
             }
+
+            ui.add_space(6.0);
+            ui.separator();
+
+            // --- 2b. Action Economy & Food ---
+            render_action_economy_controls(ui, &mut config);
 
             ui.add_space(6.0);
             ui.separator();
@@ -628,6 +933,13 @@ fn render_config_ui(
             let has_organisms = totals.herbivores > 0 || totals.predators > 0;
             let is_paused = *playback_state.get() == SimulationPlaybackState::Paused;
 
+            if render_settings_persistence_controls(ui, &mut config) {
+                config.apply_pacing(&mut fixed_time, &mut speed_mode);
+                lifecycle.sync_all_from_config(&config);
+            }
+            ui.add_space(4.0);
+            ui.separator();
+
             // --- 1. Playback & Pacing ---
             ui.label(
                 egui::RichText::new("Playback & Pacing")
@@ -726,7 +1038,12 @@ fn render_config_ui(
             ui.horizontal(|ui| {
                 ui.label("Initial energy:");
                 if ui
-                    .add(egui::DragValue::new(&mut config.initial_energy).range(1..=u8::MAX))
+                    .add(
+                        egui::DragValue::new(&mut config.initial_energy)
+                            .range(0.1..=10_000.0)
+                            .speed(0.1)
+                            .fixed_decimals(1),
+                    )
                     .changed()
                 {
                     initial_energy_changed = true;
@@ -741,7 +1058,12 @@ fn render_config_ui(
             ui.horizontal(|ui| {
                 ui.label("Max energy:");
                 if ui
-                    .add(egui::DragValue::new(&mut config.max_energy).range(1..=u8::MAX))
+                    .add(
+                        egui::DragValue::new(&mut config.max_energy)
+                            .range(0.1..=10_000.0)
+                            .speed(0.1)
+                            .fixed_decimals(1),
+                    )
                     .changed()
                 {
                     max_energy_changed = true;
@@ -813,6 +1135,18 @@ fn render_config_ui(
             if mutation_changed && let Some(ref mut mutation_strategy) = lifecycle.mutation_strategy
             {
                 **mutation_strategy = config.mutation;
+            }
+
+            ui.add_space(6.0);
+            ui.separator();
+
+            // --- 2b. Action Economy & Food ---
+            let (costs_changed, food_changed) = render_action_economy_controls(ui, &mut config);
+            if costs_changed && let Some(ref mut action_costs) = lifecycle.action_costs {
+                **action_costs = config.action_costs;
+            }
+            if food_changed {
+                lifecycle.sync_food_values(config.food_values);
             }
 
             ui.add_space(6.0);

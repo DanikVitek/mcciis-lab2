@@ -6,6 +6,10 @@ use bevy::math::I16Vec2;
 use bevy::prelude::*;
 use rand::RngExt;
 use rand::seq::IndexedRandom;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use super::brain::{
     Brain,
@@ -17,10 +21,12 @@ use super::brain::{
 use super::organism::{
     Energy,
     EntityKind,
+    FoodValues,
     Generation,
     Herbivore,
     MaxEnergy,
     Predator,
+    ValueAsFood,
 };
 use super::spatial::SpatialGrid;
 use super::{
@@ -37,7 +43,33 @@ pub trait Mutation: fmt::Debug + Any + Sync + Send {
     fn apply(&self, old: &Brain) -> Brain;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Resource)]
+#[derive(Serialize, Deserialize)]
+#[serde(rename = "mutation_strategy", rename_all = "snake_case")]
+enum MutationStrategyRepr {
+    SingleNeuron,
+    Distributed(DistributedMutation),
+}
+
+impl From<MutationStrategy> for MutationStrategyRepr {
+    fn from(value: MutationStrategy) -> Self {
+        match value {
+            MutationStrategy::SingleNeuron(SingleNeuronMutation) => Self::SingleNeuron,
+            MutationStrategy::Distributed(strat) => Self::Distributed(strat),
+        }
+    }
+}
+
+impl From<MutationStrategyRepr> for MutationStrategy {
+    fn from(value: MutationStrategyRepr) -> Self {
+        match value {
+            MutationStrategyRepr::SingleNeuron => Self::SingleNeuron(SingleNeuronMutation),
+            MutationStrategyRepr::Distributed(strat) => Self::Distributed(strat),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Resource, Serialize, Deserialize)]
+#[serde(from = "MutationStrategyRepr", into = "MutationStrategyRepr")]
 pub enum MutationStrategy {
     SingleNeuron(SingleNeuronMutation),
     Distributed(DistributedMutation),
@@ -70,7 +102,10 @@ impl From<DistributedMutation> for MutationStrategy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+#[serde(rename = "single_neuron_mutation")]
 pub struct SingleNeuronMutation;
 
 impl Mutation for SingleNeuronMutation {
@@ -90,7 +125,8 @@ impl Mutation for SingleNeuronMutation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename = "distributed_mutation", rename_all = "snake_case")]
 pub struct DistributedMutation {
     pub offset: f32,
 }
@@ -126,7 +162,8 @@ impl Mutation for DistributedMutation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Resource)]
+#[derive(Debug, Clone, Copy, PartialEq, Resource, Serialize, Deserialize)]
+#[serde(rename = "reproduction_threshold", rename_all = "snake_case")]
 pub enum ReproductionThreshold {
     Absolute(Energy),
     Relative(f32),
@@ -150,16 +187,16 @@ impl ReproductionThreshold {
     pub const fn min_energy(self, MaxEnergy(max): MaxEnergy) -> Energy {
         match self {
             Self::Absolute(threshold) => threshold,
-            Self::Relative(fraction) => Energy((max.0 as f32 * fraction) as u8),
+            Self::Relative(fraction) => Energy(max.0 * fraction),
         }
     }
 
     /// Checks whether this threshold is within valid bounds for the given `max_energy`
-    /// (`0.0 <= fraction <= 1.0` for [`Self::Relative`], or `1 <= threshold <= max` for [`Self::Absolute`]).
+    /// (`0.0 <= fraction <= 1.0` for [`Self::Relative`], or `0.0 < threshold <= max` for [`Self::Absolute`]).
     #[must_use]
     pub const fn is_valid_for(self, MaxEnergy(max): MaxEnergy) -> bool {
         match self {
-            Self::Absolute(threshold) => threshold.0 >= 1 && threshold.0 <= max.0,
+            Self::Absolute(threshold) => threshold.0 > 0.0 && threshold.0 <= max.0,
             Self::Relative(fraction) => 0.0 <= fraction && fraction <= 1.0,
         }
     }
@@ -223,7 +260,7 @@ struct PendingBirth {
     child_energy: Energy,
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn reproduction(
     mut commands: Commands,
     mut spatial_grid: ResMut<SpatialGrid>,
@@ -231,6 +268,7 @@ pub(super) fn reproduction(
     repro_threshold: Res<ReproductionThreshold>,
     max_energy: Res<MaxEnergy>,
     mutation_strategy: Res<MutationStrategy>,
+    food_values: Option<Res<FoodValues>>,
     mut query: Query<(
         Entity,
         &mut Energy,
@@ -241,6 +279,13 @@ pub(super) fn reproduction(
         Has<Herbivore>,
     )>,
 ) {
+    let herbivore_food = ValueAsFood(
+        food_values
+            .as_deref()
+            .copied()
+            .unwrap_or_default()
+            .herbivore,
+    );
     let births = Mutex::new(Vec::new());
     query.par_iter_mut().for_each(
         |(entity, mut energy, brain, pos, facing, generation, is_herbivore)| {
@@ -302,6 +347,7 @@ pub(super) fn reproduction(
                     birth.child_brain,
                     birth.child_gen,
                     birth.child_energy,
+                    herbivore_food,
                     SENSORS_HERBIVORE.to_owned(),
                 ))
                 .id()
