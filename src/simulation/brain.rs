@@ -194,18 +194,6 @@ impl SensorOffsets {
     pub fn near(&self) -> &[I16Vec2] {
         &self.near
     }
-
-    /// Returns the inclusive `(min, max)` ego-centric tile coordinates covering `(0, 0)` and all sensor zones.
-    pub fn bounds(&self) -> (I16Vec2, I16Vec2) {
-        self.front
-            .iter()
-            .chain(self.left.iter())
-            .chain(self.right.iter())
-            .chain(self.near.iter())
-            .fold((I16Vec2::ZERO, I16Vec2::ZERO), |(min, max), &offset| {
-                (min.min(offset), max.max(offset))
-            })
-    }
 }
 
 impl Default for SensorOffsets {

@@ -1,5 +1,6 @@
 use bevy::curve::easing;
 use bevy::ecs::query::QueryFilter;
+use bevy::math::I16Vec2;
 use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
 
@@ -13,12 +14,18 @@ use crate::grid::{
     GridPosition,
     GridSize,
 };
+use crate::simulation::brain::{
+    SensorOffsets,
+    sense_brain_inputs,
+};
 use crate::simulation::organism::{
     CharacterFilter,
+    EntityKind,
     Herbivore,
     Plant,
     Predator,
 };
+use crate::simulation::spatial::SpatialGrid;
 use crate::simulation::{
     SimulationSystems,
     SimulationTick,
@@ -33,10 +40,25 @@ pub const WATER_DARK_COLOR: Color = Color::oklch(0.32, 0.075, 248.0);
 /// Lighter aquatic blue used for the interior of each grid cell.
 pub const WATER_CELL_COLOR: Color = Color::oklch(0.44, 0.088, 242.0);
 
+/// RGB outline colors for the 4 sensor zones: `[Front, Left, Right, Near]`.
+pub const POV_ZONE_OUTLINE_COLORS: [[u8; 3]; 4] = [
+    [130, 225, 255], // Front
+    [255, 195, 110], // Left
+    [215, 150, 255], // Right
+    [255, 245, 155], // Near
+];
+
 const GRID_BACKGROUND_Z: f32 = -1.0;
+const POV_FILL_WORLD_Z: f32 = -0.5;
+const POV_OUTLINE_WORLD_Z: f32 = 2.5;
 const INSPECTED_CHARACTER_Z: f32 = 3.0;
 const SELECTION_HIGHLIGHT_Z: f32 = 3.5;
 const SELECTION_HIGHLIGHT_SCALE: f32 = 1.6;
+
+const POV_FILL_LOCAL_Z: f32 = POV_FILL_WORLD_Z - INSPECTED_CHARACTER_Z;
+const POV_OUTLINE_LOCAL_Z: f32 = POV_OUTLINE_WORLD_Z - INSPECTED_CHARACTER_Z;
+const POV_OUTLINE_INSET: f32 = 2.0;
+const POV_OUTLINE_THICKNESS: f32 = 2.0;
 
 /// System set in `PostUpdate` that updates grid and organism `Transform`s before camera follow and transform propagation.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,6 +104,14 @@ pub struct GridBackground;
 /// Marker component for the highlight ring rendered around the currently inspected character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
 pub struct SelectionHighlight;
+
+/// Marker component for the child entity of a character that renders its in-world POV sensor outlines and activation fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
+pub struct CharacterPovOverlay;
+
+/// Marker component on each zone fill quad inside a [`CharacterPovOverlay`], storing the zone index (`0..4`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component)]
+struct PovZoneFill(usize);
 
 #[derive(Debug, Clone, Resource)]
 pub struct OrganismSprites {
@@ -193,10 +223,12 @@ impl HasDedicatedZ for Predator {
 
 const _: () = {
     assert!(
-        GRID_BACKGROUND_Z < Plant::Z
+        GRID_BACKGROUND_Z < POV_FILL_WORLD_Z
+            && POV_FILL_WORLD_Z < Plant::Z
             && Plant::Z < Herbivore::Z
             && Herbivore::Z < Predator::Z
-            && Predator::Z < INSPECTED_CHARACTER_Z
+            && Predator::Z < POV_OUTLINE_WORLD_Z
+            && POV_OUTLINE_WORLD_Z < INSPECTED_CHARACTER_Z
             && INSPECTED_CHARACTER_Z < SELECTION_HIGHLIGHT_Z
     );
 };
@@ -262,7 +294,7 @@ impl Plugin for SpritesPlugin {
                 (sync_translation_with_grid::<()>, sync_rotation_with_grid)
                     .chain_weak()
                     .run_if(resource_equals(SimulationSpeedMode::Uncapped)),
-                sync_selection_highlight,
+                (sync_selection_highlight, ApplyDeferred).chain(),
             )
                 .chain_weak()
                 .in_set(SpriteTransformSystems),
@@ -521,28 +553,266 @@ fn interpolate_character_transform(
         });
 }
 
-#[allow(clippy::type_complexity)]
+/// Computes the translucent RGB activation fill color (`R = Predator, G = Algae/Plant, B = Herbivore`)
+/// for a sensor zone, returning `None` when all three channels are `0.0`.
+fn zone_activation_fill_color(activations: [f32; 3]) -> Option<Color> {
+    let [plants_act, herbivores_act, predators_act] = activations;
+    let max_act = predators_act
+        .max(plants_act)
+        .max(herbivores_act)
+        .clamp(0.0, 1.0);
+    if max_act <= 0.0 {
+        return None;
+    }
+    let r = predators_act.clamp(0.0, 1.0);
+    let g = plants_act.clamp(0.0, 1.0);
+    let b = herbivores_act.clamp(0.0, 1.0);
+    let alpha = (65.0 + 150.0 * max_act) / 255.0;
+    Some(Color::srgba(r, g, b, alpha))
+}
+
+/// Spawns a [`CharacterPovOverlay`] child entity attached to `character_entity` with zone fill sprites
+/// and inset perimeter outline sprites in character-local coordinates.
+fn spawn_character_pov_overlay(
+    commands: &mut Commands,
+    character_entity: Entity,
+    sensors: &SensorOffsets,
+    zone_fills: [Option<Color>; 4],
+) {
+    let zones = [
+        sensors.front(),
+        sensors.left(),
+        sensors.right(),
+        sensors.near(),
+    ];
+
+    commands
+        .spawn((
+            CharacterPovOverlay,
+            Transform::default(),
+            Visibility::Inherited,
+            ChildOf(character_entity),
+        ))
+        .with_children(|parent| {
+            let fill_size = TILE_SIZE - Vec2::splat(POV_OUTLINE_INSET);
+            let inset = POV_OUTLINE_INSET;
+            let thickness = POV_OUTLINE_THICKNESS;
+            let half_t = thickness * 0.5;
+
+            for (zone_idx, &offsets) in zones.iter().enumerate() {
+                let fill_z = POV_FILL_LOCAL_Z + zone_idx as f32 * 0.01;
+                let outline_z = POV_OUTLINE_LOCAL_Z + zone_idx as f32 * 0.01;
+                let [r, g, b] = POV_ZONE_OUTLINE_COLORS[zone_idx];
+                let outline_color = Color::srgb_u8(r, g, b);
+                let (fill_color, fill_vis) = match zone_fills[zone_idx] {
+                    Some(c) => (c, Visibility::Inherited),
+                    None => (Color::NONE, Visibility::Hidden),
+                };
+
+                let contains = |x: i16, y: i16| offsets.contains(&I16Vec2::new(x, y));
+
+                for &offset in offsets {
+                    let center = offset.as_vec2() * TILE_SIZE;
+                    parent.spawn((
+                        PovZoneFill(zone_idx),
+                        Sprite {
+                            color: fill_color,
+                            custom_size: Some(fill_size),
+                            ..default()
+                        },
+                        Transform::from_xyz(center.x, center.y, fill_z),
+                        fill_vis,
+                    ));
+
+                    let left = center.x - TILE_SIZE.x * 0.5;
+                    let right = center.x + TILE_SIZE.x * 0.5;
+                    let bottom = center.y - TILE_SIZE.y * 0.5;
+                    let top = center.y + TILE_SIZE.y * 0.5;
+
+                    let has_top = contains(offset.x, offset.y + 1);
+                    let has_bottom = contains(offset.x, offset.y - 1);
+                    let has_left = contains(offset.x - 1, offset.y);
+                    let has_right = contains(offset.x + 1, offset.y);
+
+                    // Top edge (local_y + 1)
+                    if !has_top {
+                        let x_min = if !has_left {
+                            left + inset - half_t
+                        } else if contains(offset.x - 1, offset.y + 1) {
+                            left - inset - half_t
+                        } else {
+                            left
+                        };
+                        let x_max = if !has_right {
+                            right - inset + half_t
+                        } else if contains(offset.x + 1, offset.y + 1) {
+                            right + inset + half_t
+                        } else {
+                            right
+                        };
+                        let width = (x_max - x_min).max(0.0);
+                        let x_mid = (x_min + x_max) * 0.5;
+                        let y_mid = top - inset;
+                        parent.spawn((
+                            Sprite {
+                                color: outline_color,
+                                custom_size: Some(Vec2::new(width, thickness)),
+                                ..default()
+                            },
+                            Transform::from_xyz(x_mid, y_mid, outline_z),
+                        ));
+                    }
+
+                    // Bottom edge (local_y - 1)
+                    if !has_bottom {
+                        let x_min = if !has_left {
+                            left + inset - half_t
+                        } else if contains(offset.x - 1, offset.y - 1) {
+                            left - inset - half_t
+                        } else {
+                            left
+                        };
+                        let x_max = if !has_right {
+                            right - inset + half_t
+                        } else if contains(offset.x + 1, offset.y - 1) {
+                            right + inset + half_t
+                        } else {
+                            right
+                        };
+                        let width = (x_max - x_min).max(0.0);
+                        let x_mid = (x_min + x_max) * 0.5;
+                        let y_mid = bottom + inset;
+                        parent.spawn((
+                            Sprite {
+                                color: outline_color,
+                                custom_size: Some(Vec2::new(width, thickness)),
+                                ..default()
+                            },
+                            Transform::from_xyz(x_mid, y_mid, outline_z),
+                        ));
+                    }
+
+                    // Left edge (local_x - 1)
+                    if !has_left {
+                        let y_min = if !has_bottom {
+                            bottom + inset - half_t
+                        } else if contains(offset.x - 1, offset.y - 1) {
+                            bottom - inset - half_t
+                        } else {
+                            bottom
+                        };
+                        let y_max = if !has_top {
+                            top - inset + half_t
+                        } else if contains(offset.x - 1, offset.y + 1) {
+                            top + inset + half_t
+                        } else {
+                            top
+                        };
+                        let height = (y_max - y_min).max(0.0);
+                        let x_mid = left + inset;
+                        let y_mid = (y_min + y_max) * 0.5;
+                        parent.spawn((
+                            Sprite {
+                                color: outline_color,
+                                custom_size: Some(Vec2::new(thickness, height)),
+                                ..default()
+                            },
+                            Transform::from_xyz(x_mid, y_mid, outline_z),
+                        ));
+                    }
+
+                    // Right edge (local_x + 1)
+                    if !has_right {
+                        let y_min = if !has_bottom {
+                            bottom + inset - half_t
+                        } else if contains(offset.x + 1, offset.y - 1) {
+                            bottom - inset - half_t
+                        } else {
+                            bottom
+                        };
+                        let y_max = if !has_top {
+                            top - inset + half_t
+                        } else if contains(offset.x + 1, offset.y + 1) {
+                            top + inset + half_t
+                        } else {
+                            top
+                        };
+                        let height = (y_max - y_min).max(0.0);
+                        let x_mid = right - inset;
+                        let y_mid = (y_min + y_max) * 0.5;
+                        parent.spawn((
+                            Sprite {
+                                color: outline_color,
+                                custom_size: Some(Vec2::new(thickness, height)),
+                                ..default()
+                            },
+                            Transform::from_xyz(x_mid, y_mid, outline_z),
+                        ));
+                    }
+                }
+            }
+        });
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn sync_selection_highlight(
     inspected: Option<Res<InspectedCharacter>>,
+    spatial_grid: Res<SpatialGrid>,
     mut characters: Query<
-        (&mut Transform, Has<Herbivore>),
-        (CharacterFilter, Without<SelectionHighlight>),
+        (
+            &mut Transform,
+            &GridPosition,
+            &Facing,
+            &SensorOffsets,
+            Has<Herbivore>,
+        ),
+        (
+            CharacterFilter,
+            Without<SelectionHighlight>,
+            Without<CharacterPovOverlay>,
+            Without<PovZoneFill>,
+        ),
     >,
-    highlight_query: Single<(&mut Transform, &mut Visibility), With<SelectionHighlight>>,
+    highlight_query: Single<
+        (&mut Transform, &mut Visibility),
+        (
+            With<SelectionHighlight>,
+            Without<CharacterPovOverlay>,
+            Without<PovZoneFill>,
+        ),
+    >,
+    mut pov_overlays: Query<
+        (&ChildOf, &mut Visibility, Option<&Children>),
+        (
+            With<CharacterPovOverlay>,
+            Without<SelectionHighlight>,
+            Without<PovZoneFill>,
+        ),
+    >,
+    mut fill_sprites: Query<
+        (&PovZoneFill, &mut Sprite, &mut Visibility),
+        (Without<CharacterPovOverlay>, Without<SelectionHighlight>),
+    >,
     mut prev_inspected: Local<Option<Entity>>,
+    mut commands: Commands,
 ) {
     let selected = inspected.and_then(|i| i.0);
 
-    // Restore Z of previously inspected character if selection changed
+    // Restore Z and hide POV overlay of previously inspected character if selection changed
     if *prev_inspected != selected {
-        if let Some(prev_entity) = *prev_inspected
-            && let Ok((mut prev_transform, is_herbivore)) = characters.get_mut(prev_entity)
-        {
-            prev_transform.translation.z = if is_herbivore {
-                Herbivore::Z
-            } else {
-                Predator::Z
-            };
+        if let Some(prev_entity) = *prev_inspected {
+            if let Ok((mut prev_transform, .., is_herbivore)) = characters.get_mut(prev_entity) {
+                prev_transform.translation.z = if is_herbivore {
+                    Herbivore::Z
+                } else {
+                    Predator::Z
+                };
+            }
+            for (child_of, mut pov_vis, _) in &mut pov_overlays {
+                if child_of.parent() == prev_entity && *pov_vis != Visibility::Hidden {
+                    *pov_vis = Visibility::Hidden;
+                }
+            }
         }
         *prev_inspected = selected;
     }
@@ -550,7 +820,8 @@ fn sync_selection_highlight(
     let (mut highlight_transform, mut highlight_vis) = highlight_query.into_inner();
 
     if let Some(entity) = selected
-        && let Ok((mut char_transform, _)) = characters.get_mut(entity)
+        && let Ok((mut char_transform, &pos, &facing, sensors, is_herbivore)) =
+            characters.get_mut(entity)
     {
         if char_transform.translation.z != INSPECTED_CHARACTER_Z {
             char_transform.translation.z = INSPECTED_CHARACTER_Z;
@@ -561,6 +832,57 @@ fn sync_selection_highlight(
             .extend(SELECTION_HIGHLIGHT_Z);
         if *highlight_vis != Visibility::Inherited {
             *highlight_vis = Visibility::Inherited;
+        }
+
+        let kind = if is_herbivore {
+            EntityKind::Herbivore
+        } else {
+            EntityKind::Predator
+        };
+        let sensed = sense_brain_inputs(&spatial_grid, pos, facing, kind, sensors);
+        let inputs = sensed.as_slice();
+        let zone_fills = [
+            zone_activation_fill_color([inputs[0], inputs[1], inputs[2]]),
+            zone_activation_fill_color([inputs[3], inputs[4], inputs[5]]),
+            zone_activation_fill_color([inputs[6], inputs[7], inputs[8]]),
+            zone_activation_fill_color([inputs[9], inputs[10], inputs[11]]),
+        ];
+
+        let mut existing_overlay = None;
+        for (child_of, pov_vis, pov_children) in &mut pov_overlays {
+            if child_of.parent() == entity {
+                existing_overlay = Some((pov_vis, pov_children));
+                break;
+            }
+        }
+
+        if let Some((mut pov_vis, pov_children)) = existing_overlay {
+            if *pov_vis != Visibility::Inherited {
+                *pov_vis = Visibility::Inherited;
+            }
+            if let Some(children) = pov_children {
+                for &child in children {
+                    if let Ok((zone_fill, mut sprite, mut vis)) = fill_sprites.get_mut(child) {
+                        match zone_fills[zone_fill.0] {
+                            Some(color) => {
+                                if sprite.color != color {
+                                    sprite.color = color;
+                                }
+                                if *vis != Visibility::Inherited {
+                                    *vis = Visibility::Inherited;
+                                }
+                            }
+                            None => {
+                                if *vis != Visibility::Hidden {
+                                    *vis = Visibility::Hidden;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            spawn_character_pov_overlay(&mut commands, entity, sensors, zone_fills);
         }
     } else if *highlight_vis != Visibility::Hidden {
         *highlight_vis = Visibility::Hidden;

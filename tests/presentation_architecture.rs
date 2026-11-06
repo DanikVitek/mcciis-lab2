@@ -20,6 +20,7 @@ use life_sim::grid::{
     GridSize,
 };
 use life_sim::presentation::sprites::{
+    CharacterPovOverlay,
     GridBackground,
     PreviousPose,
     SelectionHighlight,
@@ -224,7 +225,8 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
     }
 
     // Place a character at the corner of the grid `(0, 0)` and follow it:
-    // Verify `Camera2d` centers directly on the edge character and `SelectionHighlight` becomes visible.
+    // Verify `Camera2d` centers directly on the edge character, `SelectionHighlight` becomes visible,
+    // and `CharacterPovOverlay` is attached as a child entity with `Visibility::Inherited`.
     let (edge_entity, edge_pos) = {
         let world = app.world_mut();
         let entity = world
@@ -260,9 +262,17 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
             highlight_transform.translation.truncate(),
             expected_world_xy
         );
+
+        let (pov_child_of, pov_vis, pov_children) = world
+            .query_filtered::<(&ChildOf, &Visibility, &Children), With<CharacterPovOverlay>>()
+            .single(world)
+            .expect("CharacterPovOverlay attached to inspected character");
+        assert_eq!(pov_child_of.parent(), edge_entity);
+        assert_eq!(*pov_vis, Visibility::Inherited);
+        assert!(!pov_children.is_empty());
     }
 
-    // Pressing `Escape` unfollows the character and hides `SelectionHighlight`.
+    // Pressing `Escape` unfollows the character and hides both `SelectionHighlight` and `CharacterPovOverlay`.
     send_key_press(&mut app, KeyCode::Escape);
     app.update();
 
@@ -274,6 +284,12 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
             .single(world)
             .expect("SelectionHighlight visibility");
         assert_eq!(*highlight_vis, Visibility::Hidden);
+
+        let pov_vis = world
+            .query_filtered::<&Visibility, With<CharacterPovOverlay>>()
+            .single(world)
+            .expect("CharacterPovOverlay visibility");
+        assert_eq!(*pov_vis, Visibility::Hidden);
     }
 }
 
