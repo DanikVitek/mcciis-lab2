@@ -63,6 +63,7 @@ use life_sim::simulation::{
     DistributionConfig,
     HistoryRecorderPlugin,
     MutationStrategy,
+    PlantGrowthRate,
     ReproductionPlugin,
     ReproductionThreshold,
     SimulationHistory,
@@ -130,6 +131,7 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
     assert!(!app.world().contains_resource::<GridSize>());
     assert!(!app.world().contains_resource::<DistributionConfig>());
     assert!(!app.world().contains_resource::<SpatialGrid>());
+    assert!(!app.world().contains_resource::<PlantGrowthRate>());
     assert!(!app.world().contains_resource::<MutationStrategy>());
     assert!(!app.world().contains_resource::<InitialEnergy>());
     assert!(!app.world().contains_resource::<MaxEnergy>());
@@ -172,6 +174,7 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         config.plants_fraction = 0.25;
         config.herbivores_fraction = 0.10;
         config.predators_fraction = 0.05;
+        config.plant_growth_rate = PlantGrowthRate(0.35);
         config.initial_energy = 12.0.into();
         config.max_energy = 24.0.into();
         config.reproduction_threshold = ReproductionThreshold::Absolute(Energy(18.0));
@@ -196,6 +199,10 @@ fn presentation_setup_state_withholds_resources_and_hides_grid_until_accepted() 
         SimulationPlaybackState::Running
     );
     assert_eq!(*app.world().resource::<GridSize>(), custom_size);
+    assert_eq!(
+        *app.world().resource::<PlantGrowthRate>(),
+        PlantGrowthRate(0.35)
+    );
     assert_eq!(*app.world().resource::<InitialEnergy>(), 12.0.into());
     assert_eq!(*app.world().resource::<MaxEnergy>(), 24.0.into());
     assert_eq!(
@@ -508,6 +515,7 @@ fn sim_config_saves_loads_and_auto_saves_on_change() {
         config.plants_fraction = 0.3;
         config.herbivores_fraction = 0.15;
         config.predators_fraction = 0.05;
+        config.plant_growth_rate = PlantGrowthRate(0.25);
         config.initial_energy = Energy(7.5).into();
         config.max_energy = Energy(15.0).into();
         config.reproduction_threshold = ReproductionThreshold::Absolute(Energy(11.25));
@@ -528,6 +536,7 @@ fn sim_config_saves_loads_and_auto_saves_on_change() {
     app.update();
 
     let raw_toml = std::fs::read_to_string(&temp_path).expect("read auto-saved TOML");
+    assert!(raw_toml.contains("plant_growth_rate = 0.25"), "{raw_toml}");
     assert!(raw_toml.contains("speed_mode = \"uncapped\""), "{raw_toml}");
     assert!(raw_toml.contains("absolute = 11.25"), "{raw_toml}");
     assert!(raw_toml.contains("[mutation.distributed]"), "{raw_toml}");

@@ -1,20 +1,36 @@
 use core::num::NonZeroU64;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{
     AtomicU64,
     Ordering,
 };
 
+use bevy::math::I16Vec2;
 use bevy::prelude::*;
 use life_sim::grid::{
+    Facing,
     GridPosition,
     GridSize,
 };
+use life_sim::simulation::brain::{
+    Action,
+    Brain,
+    INPUTS,
+    OUTPUTS,
+    SENSORS_HERBIVORE,
+    SENSORS_PREDATOR,
+};
 use life_sim::simulation::organism::{
+    ActionCosts,
+    Energy,
     EntityKind,
+    FoodValues,
+    Generation,
     Herbivore,
     Plant,
     Predator,
+    ValueAsFood,
 };
 use life_sim::simulation::spatial::{
     CellCounts,
@@ -107,7 +123,7 @@ impl Plugin for MockSimulationPlugin {
     }
 }
 
-fn populate_mock_grid(spatial_grid: &mut SpatialGrid, counts: CellCounts<u32>) {
+fn populate_mock_grid(spatial_grid: &SpatialGrid, counts: CellCounts<u32>) {
     let origin = GridPosition::new(0, 0);
     for _ in 0..counts.plants {
         spatial_grid.insert(origin, Entity::PLACEHOLDER, EntityKind::Plant);
@@ -126,7 +142,7 @@ fn mock_seed_world(
     config: Res<MockSimConfig>,
 ) {
     spatial_grid.resize_and_clear(config.grid_size);
-    populate_mock_grid(&mut spatial_grid, config.initial_counts);
+    populate_mock_grid(&spatial_grid, config.initial_counts);
     commands.trigger(WorldSeeded);
 }
 
@@ -139,12 +155,12 @@ fn mock_on_reset_simulation(
 ) {
     tick_count.0 = 0;
     spatial_grid.resize_and_clear(config.grid_size);
-    populate_mock_grid(&mut spatial_grid, config.initial_counts);
+    populate_mock_grid(&spatial_grid, config.initial_counts);
     commands.trigger(WorldSeeded);
 }
 
 fn mock_step_world(
-    mut spatial_grid: ResMut<SpatialGrid>,
+    spatial_grid: Res<SpatialGrid>,
     tick_count: Res<SimulationTickCount>,
     config: Res<MockSimConfig>,
 ) {
@@ -544,4 +560,299 @@ fn history_recorder_deduplicates_unchanged_samples_while_updating_last_tick() {
     assert_eq!(history.tick_history(), &[0, 2, 5]);
     assert_eq!(history.last_tick(), Some(7));
     assert_eq!(history.counts_history().herbivores, &[5, 6, 7]);
+}
+
+fn deterministic_action_brain(target: Action) -> Brain {
+    for idx in 0..OUTPUTS {
+        let mut brain: Brain = rand::random();
+        brain.weights_mut().fill(0.0);
+        brain.biases_mut().fill(-10.0);
+        brain.biases_mut()[idx] = 10.0;
+        if brain.act_on([0.0; INPUTS].into()) == target {
+            return brain;
+        }
+    }
+    panic!("no output neuron produced {target:?}");
+}
+
+fn position_with_target_in_near(
+    target: GridPosition,
+    facing: Facing,
+    near_offsets: &[I16Vec2],
+    size: GridSize,
+) -> GridPosition {
+    let offset = near_offsets
+        .iter()
+        .copied()
+        .find(|&o| o != I16Vec2::ZERO)
+        .unwrap_or(I16Vec2::ZERO);
+    target.add_wrapping(-facing.rotate_offset(offset), size)
+}
+
+#[test]
+fn simultaneous_consumers_split_food_evenly_and_handle_chained_predation() {
+    let size = GridSize::new(10, 10);
+    let dist = DistributionConfig::builder()
+        .plants_fraction(0.0)
+        .herbivores_fraction(0.0)
+        .predators_fraction(0.0)
+        .build()
+        .unwrap();
+
+    let mut app = App::new();
+    app.add_plugins(
+        SimulationPlugin::builder()
+            .grid_size(size)
+            .distribution(dist)
+            .initial_energy(10.0)
+            .max_energy(100.0)
+            .action_costs(ActionCosts {
+                turn: Energy(0.0),
+                go_forward: Energy(0.0),
+                consume: Energy(1.0),
+            })
+            .food_values(FoodValues {
+                plant: Energy(9.0),
+                herbivore: Energy(12.0),
+            })
+            .build(),
+    );
+    app.update();
+
+    let consume_brain = deterministic_action_brain(Action::Consume);
+    let plant_pos = GridPosition::new(5, 5);
+
+    let (plant, h1, h2, h3, p1, p2) = {
+        let world = app.world_mut();
+        let plant = world
+            .spawn((Plant, plant_pos, ValueAsFood(Energy(9.0))))
+            .id();
+        world
+            .resource::<SpatialGrid>()
+            .insert(plant_pos, plant, EntityKind::Plant);
+
+        let h1_pos =
+            position_with_target_in_near(plant_pos, Facing::East, SENSORS_HERBIVORE.near(), size);
+        let h2_pos =
+            position_with_target_in_near(plant_pos, Facing::West, SENSORS_HERBIVORE.near(), size);
+        let h3_pos =
+            position_with_target_in_near(plant_pos, Facing::North, SENSORS_HERBIVORE.near(), size);
+
+        let h1 = world
+            .spawn((
+                Herbivore,
+                h1_pos,
+                Facing::East,
+                consume_brain.clone(),
+                Generation::default(),
+                Energy(10.0),
+                ValueAsFood(Energy(12.0)),
+                SENSORS_HERBIVORE.to_owned(),
+            ))
+            .id();
+        let h2 = world
+            .spawn((
+                Herbivore,
+                h2_pos,
+                Facing::West,
+                consume_brain.clone(),
+                Generation::default(),
+                Energy(10.0),
+                ValueAsFood(Energy(12.0)),
+                SENSORS_HERBIVORE.to_owned(),
+            ))
+            .id();
+        let h3 = world
+            .spawn((
+                Herbivore,
+                h3_pos,
+                Facing::North,
+                consume_brain.clone(),
+                Generation::default(),
+                Energy(10.0),
+                ValueAsFood(Energy(12.0)),
+                SENSORS_HERBIVORE.to_owned(),
+            ))
+            .id();
+
+        for (pos, entity) in [(h1_pos, h1), (h2_pos, h2), (h3_pos, h3)] {
+            world
+                .resource::<SpatialGrid>()
+                .insert(pos, entity, EntityKind::Herbivore);
+        }
+
+        // Two predators simultaneously target `h1` on the same tick `h1` consumes `plant`.
+        let p1_pos =
+            position_with_target_in_near(h1_pos, Facing::North, SENSORS_PREDATOR.near(), size);
+        let p2_pos =
+            position_with_target_in_near(h1_pos, Facing::South, SENSORS_PREDATOR.near(), size);
+
+        let p1 = world
+            .spawn((
+                Predator,
+                p1_pos,
+                Facing::North,
+                consume_brain.clone(),
+                Generation::default(),
+                Energy(10.0),
+                SENSORS_PREDATOR.to_owned(),
+            ))
+            .id();
+        let p2 = world
+            .spawn((
+                Predator,
+                p2_pos,
+                Facing::South,
+                consume_brain,
+                Generation::default(),
+                Energy(10.0),
+                SENSORS_PREDATOR.to_owned(),
+            ))
+            .id();
+
+        for (pos, entity) in [(p1_pos, p1), (p2_pos, p2)] {
+            world
+                .resource::<SpatialGrid>()
+                .insert(pos, entity, EntityKind::Predator);
+        }
+
+        (plant, h1, h2, h3, p1, p2)
+    };
+
+    app.world_mut().run_schedule(SimulationTick);
+
+    let world = app.world();
+    let totals = world.resource::<SpatialGrid>().total_counts();
+    assert_eq!(totals.plants, 0);
+    assert_eq!(totals.herbivores, 2);
+    assert_eq!(totals.predators, 2);
+
+    assert!(world.get_entity(plant).is_err());
+    assert!(world.get_entity(h1).is_err());
+
+    // 3 herbivores split `9.0` evenly (`3.0` each) minus `1.0` consume cost = `+2.0` -> `12.0`.
+    assert_eq!(*world.get::<Energy>(h2).unwrap(), Energy(12.0));
+    assert_eq!(*world.get::<Energy>(h3).unwrap(), Energy(12.0));
+
+    // 2 predators split `12.0` evenly (`6.0` each) minus `1.0` consume cost = `+5.0` -> `15.0`.
+    assert_eq!(*world.get::<Energy>(p1).unwrap(), Energy(15.0));
+    assert_eq!(*world.get::<Energy>(p2).unwrap(), Energy(15.0));
+}
+
+#[test]
+fn plants_bud_locally_up_to_capacity_and_stay_extinct_at_zero() {
+    let size = GridSize::new(10, 10);
+    let dist = DistributionConfig::builder()
+        .plants_fraction(0.20)
+        .herbivores_fraction(0.0)
+        .predators_fraction(0.0)
+        .build()
+        .unwrap();
+
+    let mut app = App::new();
+    app.add_plugins((
+        SimulationPlugin::builder()
+            .grid_size(size)
+            .distribution(dist)
+            .initial_energy(10.0)
+            .max_energy(100.0)
+            .build(),
+        ReproductionPlugin::builder().plant_growth_rate(1.0).build(),
+    ));
+    app.update();
+
+    // Despawn all seeded plants and leave a single founder plant at `(5, 5)`.
+    let founder_pos = GridPosition::new(5, 5);
+    {
+        let existing: Vec<(Entity, GridPosition)> = {
+            let world = app.world_mut();
+            world
+                .query_filtered::<(Entity, &GridPosition), With<Plant>>()
+                .iter(world)
+                .map(|(e, p)| (e, *p))
+                .collect()
+        };
+        let world = app.world_mut();
+        for (entity, pos) in existing {
+            world
+                .resource::<SpatialGrid>()
+                .remove(pos, entity, EntityKind::Plant);
+            world.despawn(entity);
+        }
+        let founder = world
+            .spawn((Plant, founder_pos, ValueAsFood(Energy(1.0))))
+            .id();
+        world
+            .resource::<SpatialGrid>()
+            .insert(founder_pos, founder, EntityKind::Plant);
+    }
+
+    assert_eq!(app.world().resource::<SpatialGrid>().plant_count(), 1);
+
+    // Advance until the first offspring buds, and verify it appears on an adjacent Moore neighbor.
+    for _ in 0..50 {
+        app.world_mut().run_schedule(SimulationTick);
+        if app.world().resource::<SpatialGrid>().plant_count() > 1 {
+            break;
+        }
+    }
+
+    {
+        let world = app.world_mut();
+        let positions: Vec<GridPosition> = world
+            .query_filtered::<&GridPosition, With<Plant>>()
+            .iter(world)
+            .copied()
+            .collect();
+        assert_eq!(positions.len(), 2);
+        let child_pos = positions.into_iter().find(|&p| p != founder_pos).unwrap();
+        let dx = (i32::from(child_pos.x) - i32::from(founder_pos.x)).abs();
+        let dy = (i32::from(child_pos.y) - i32::from(founder_pos.y)).abs();
+        assert!(dx <= 1 && dy <= 1 && (dx != 0 || dy != 0));
+    }
+
+    // Advance further: logistic budding fills out to `max_plants = 20`, never exceeding it or stacking tiles.
+    for _ in 0..400 {
+        app.world_mut().run_schedule(SimulationTick);
+    }
+
+    assert_eq!(app.world().resource::<SpatialGrid>().plant_count(), 20);
+    {
+        let world = app.world_mut();
+        let positions: HashSet<GridPosition> = world
+            .query_filtered::<&GridPosition, With<Plant>>()
+            .iter(world)
+            .copied()
+            .collect();
+        assert_eq!(
+            positions.len(),
+            20,
+            "expected 20 plants on 20 distinct tiles"
+        );
+    }
+
+    // Once all plants are consumed/removed (`0` remaining), algae remain permanently extinct.
+    {
+        let all_plants: Vec<(Entity, GridPosition)> = {
+            let world = app.world_mut();
+            world
+                .query_filtered::<(Entity, &GridPosition), With<Plant>>()
+                .iter(world)
+                .map(|(e, p)| (e, *p))
+                .collect()
+        };
+        let world = app.world_mut();
+        for (entity, pos) in all_plants {
+            world
+                .resource::<SpatialGrid>()
+                .remove(pos, entity, EntityKind::Plant);
+            world.despawn(entity);
+        }
+    }
+    assert_eq!(app.world().resource::<SpatialGrid>().plant_count(), 0);
+
+    for _ in 0..50 {
+        app.world_mut().run_schedule(SimulationTick);
+    }
+    assert_eq!(app.world().resource::<SpatialGrid>().plant_count(), 0);
 }

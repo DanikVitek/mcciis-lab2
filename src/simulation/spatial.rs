@@ -4,9 +4,18 @@ use core::ops::{
     Index,
     IndexMut,
 };
+use core::sync::atomic::{
+    AtomicU16,
+    AtomicU32,
+    Ordering,
+};
 
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
+use parking_lot::{
+    RwLock,
+    RwLockReadGuard,
+};
 
 use super::organism::EntityKind;
 use crate::grid::{
@@ -185,12 +194,12 @@ where
 #[derive(Resource)]
 pub struct SpatialGrid {
     size: GridSize,
-    /// Running O(1) population totals across the entire grid
-    total_counts: CellCounts<u32>,
-    /// Hot array for `Brain` inputs: `[plants, herbivores, predators]` per tile
-    counts: Vec<CellCounts<u16>>,
-    /// Cold array for `Action::Consume` and tile inspection: entities currently standing on each tile
-    entities: Vec<Vec<(Entity, EntityKind)>>,
+    /// Running O(1) population totals across the entire grid (lock-free atomics for parallel updates).
+    total_counts: CellCounts<AtomicU32>,
+    /// Hot array for `Brain` inputs: `[plants, herbivores, predators]` per tile (lock-free atomics).
+    counts: Vec<CellCounts<AtomicU16>>,
+    /// Per-tile entity lists guarded by fine-grained per-cell reader-writer locks for concurrent access.
+    entities: Vec<RwLock<Vec<(Entity, EntityKind)>>>,
 }
 
 impl SpatialGrid {
@@ -199,8 +208,8 @@ impl SpatialGrid {
         Self {
             size,
             total_counts: CellCounts::default(),
-            counts: vec![CellCounts::default(); len],
-            entities: vec![Vec::new(); len],
+            counts: (0..len).map(|_| CellCounts::default()).collect(),
+            entities: (0..len).map(|_| RwLock::new(Vec::new())).collect(),
         }
     }
 
@@ -214,10 +223,12 @@ impl SpatialGrid {
     }
 
     pub fn clear(&mut self) {
-        self.total_counts = CellCounts::default();
-        self.counts.fill(CellCounts::default());
+        self.total_counts.as_mut().for_each(|c| *c.get_mut() = 0);
+        for cell_counts in &mut self.counts {
+            cell_counts.as_mut().for_each(|c| *c.get_mut() = 0);
+        }
         for cell in &mut self.entities {
-            cell.clear();
+            cell.get_mut().clear();
         }
     }
 
@@ -229,20 +240,55 @@ impl SpatialGrid {
         }
     }
 
-    pub fn insert(&mut self, pos: GridPosition, entity: Entity, kind: EntityKind) {
+    pub fn insert(&self, pos: GridPosition, entity: Entity, kind: EntityKind) {
         let i = self.idx(pos);
-        self.counts[i][kind] += 1;
-        self.total_counts[kind] += 1;
-        self.entities[i].push((entity, kind));
+        self.counts[i][kind].fetch_add(1, Ordering::Relaxed);
+        self.total_counts[kind].fetch_add(1, Ordering::Relaxed);
+        self.entities[i].write().push((entity, kind));
     }
 
-    pub fn remove(&mut self, pos: GridPosition, entity: Entity, kind: EntityKind) -> bool {
+    /// Atomically claims `pos` for a newborn [`EntityKind::Plant`] if `pos` currently has `0` plants
+    /// and total grid plants are strictly below `max_plants`.
+    ///
+    /// When this returns `true`, the caller MUST register the spawned entity via [`Self::push_claimed_entity`].
+    pub fn try_claim_empty_plant_tile(&self, pos: GridPosition, max_plants: u32) -> bool {
         let i = self.idx(pos);
-        let cell = &mut self.entities[i];
+        if self.counts[i]
+            .plants
+            .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return false;
+        }
+        if self
+            .total_counts
+            .plants
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |curr| {
+                (curr < max_plants).then_some(curr + 1)
+            })
+            .is_err()
+        {
+            self.counts[i].plants.store(0, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+
+    /// Appends `entity` to `pos`'s entity list after its cell and total counts were already incremented
+    /// (e.g. via [`Self::try_claim_empty_plant_tile`]).
+    pub fn push_claimed_entity(&self, pos: GridPosition, entity: Entity, kind: EntityKind) {
+        let i = self.idx(pos);
+        self.entities[i].write().push((entity, kind));
+    }
+
+    pub fn remove(&self, pos: GridPosition, entity: Entity, kind: EntityKind) -> bool {
+        let i = self.idx(pos);
+        let mut cell = self.entities[i].write();
         if let Some(pos_in_vec) = cell.iter().position(|&(e, _)| e == entity) {
             cell.swap_remove(pos_in_vec);
-            self.counts[i][kind] -= 1;
-            self.total_counts[kind] -= 1;
+            drop(cell);
+            self.counts[i][kind].fetch_sub(1, Ordering::Relaxed);
+            self.total_counts[kind].fetch_sub(1, Ordering::Relaxed);
             true
         } else {
             false
@@ -251,7 +297,7 @@ impl SpatialGrid {
 
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn move_entity(
-        &mut self,
+        &self,
         from: GridPosition,
         to: GridPosition,
         entity: Entity,
@@ -261,22 +307,24 @@ impl SpatialGrid {
             return;
         }
         let from_idx = self.idx(from);
-        let from_cell = &mut self.entities[from_idx];
-        let Some(pos_in_vec) = from_cell.iter().position(|&(e, _)| e == entity) else {
-            debug_assert!(false, "Moved entity was not registered at `from` tile");
-            return;
-        };
-        from_cell.swap_remove(pos_in_vec);
-        self.counts[from_idx][kind] -= 1;
+        {
+            let mut from_cell = self.entities[from_idx].write();
+            let Some(pos_in_vec) = from_cell.iter().position(|&(e, _)| e == entity) else {
+                debug_assert!(false, "Moved entity was not registered at `from` tile");
+                return;
+            };
+            from_cell.swap_remove(pos_in_vec);
+        }
+        self.counts[from_idx][kind].fetch_sub(1, Ordering::Relaxed);
 
         let to_idx = self.idx(to);
-        self.counts[to_idx][kind] += 1;
-        self.entities[to_idx].push((entity, kind));
+        self.counts[to_idx][kind].fetch_add(1, Ordering::Relaxed);
+        self.entities[to_idx].write().push((entity, kind));
     }
 
-    /// Returns all `(Entity, EntityKind)` pairs currently occupying `pos`.
-    pub fn entities_at(&self, pos: GridPosition) -> &[(Entity, EntityKind)] {
-        &self.entities[self.idx(pos)]
+    /// Returns a shared read guard to all `(Entity, EntityKind)` pairs currently occupying `pos`.
+    pub fn entities_at(&self, pos: GridPosition) -> RwLockReadGuard<'_, Vec<(Entity, EntityKind)>> {
+        self.entities[self.idx(pos)].read()
     }
 
     /// Sums `[Plant, Herbivore, Predator]` counts across a slice of local sensor offsets.
@@ -293,7 +341,9 @@ impl SpatialGrid {
             .copied()
             .map(|offset| {
                 let target = origin.add_wrapping_rotated(offset, facing, self.size);
-                let mut cell_counts = self.counts[self.idx(target)];
+                let mut cell_counts = self.counts[self.idx(target)]
+                    .as_ref()
+                    .map(|c| c.load(Ordering::Relaxed));
 
                 // Do not count the sensing character itself on its own tile (0, 0) in `near`
                 if offset == I16Vec2::ZERO {
@@ -317,10 +367,11 @@ impl SpatialGrid {
         for &offset in near_offsets {
             let target_pos = origin.add_wrapping_rotated(offset, facing, self.size);
             let i = self.idx(target_pos);
-            if self.counts[i][target_kind] == 0 {
+            if self.counts[i][target_kind].load(Ordering::Relaxed) == 0 {
                 continue;
             }
-            for &(entity, kind) in &self.entities[i] {
+            let cell = self.entities[i].read();
+            for &(entity, kind) in cell.iter() {
                 if kind == target_kind && entity != exclude_self {
                     return Some((entity, target_pos));
                 }
@@ -330,15 +381,22 @@ impl SpatialGrid {
     }
 
     #[inline]
-    pub const fn character_counts(&self) -> CharacterCounts {
+    pub fn plant_count(&self) -> u32 {
+        self.total_counts.plants.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn character_counts(&self) -> CharacterCounts {
         CharacterCounts {
-            herbivores: self.total_counts.herbivores,
-            predators: self.total_counts.predators,
+            herbivores: self.total_counts.herbivores.load(Ordering::Relaxed),
+            predators: self.total_counts.predators.load(Ordering::Relaxed),
         }
     }
 
     #[inline]
-    pub const fn total_counts(&self) -> CellCounts<u32> {
+    pub fn total_counts(&self) -> CellCounts<u32> {
         self.total_counts
+            .as_ref()
+            .map(|c| c.load(Ordering::Relaxed))
     }
 }

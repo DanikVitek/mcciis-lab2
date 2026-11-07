@@ -2,6 +2,10 @@ use core::fmt;
 use core::num::NonZeroU32;
 use core::ops::Add;
 use core::str::FromStr;
+use core::sync::atomic::{
+    AtomicU32,
+    Ordering,
+};
 
 use bevy::prelude::*;
 use serde::{
@@ -332,8 +336,26 @@ impl Energy {
     }
 }
 
+/// Atomic counter tracking how many organisms simultaneously targeted an edible entity during a tick,
+/// enabling lock-free parallel target registration and even food-value splitting.
+#[derive(Debug, Default, Component)]
+pub struct ConsumerCount(AtomicU32);
+
+impl ConsumerCount {
+    #[inline]
+    pub fn increment(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn get(&self) -> u32 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Component, Serialize, Deserialize)]
 #[serde(rename = "value_as_food")]
+#[require(ConsumerCount)]
 #[repr(transparent)]
 pub struct ValueAsFood(pub Energy);
 

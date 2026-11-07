@@ -3,6 +3,7 @@ use core::num::NonZeroU64;
 use core::slice;
 
 use bevy::prelude::*;
+use parking_lot::Mutex;
 
 use super::organism::{
     CharacterFilter,
@@ -328,6 +329,10 @@ impl HistoryRecorderPlugin {
 
 impl Plugin for HistoryRecorderPlugin {
     fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<TaskPoolPlugin>() {
+            app.add_plugins(TaskPoolPlugin::default());
+        }
+
         app.init_resource::<SimulationHistory>()
             .insert_resource(self.sample_rate)
             .add_observer(on_world_seeded)
@@ -340,36 +345,62 @@ impl Plugin for HistoryRecorderPlugin {
     }
 }
 
-fn sample_generations(query: impl IntoIterator<Item = Generation>) -> GenerationSample {
-    let mut table: Vec<u32> = Vec::new();
-    let mut min_gen: Option<u32> = None;
-    let mut max_gen: Option<u32> = None;
+struct BatchGenerationHistogram<'a> {
+    local: Vec<u32>,
+    shared: &'a Mutex<Vec<u32>>,
+}
 
-    for generation in query {
-        let n = generation.number();
-        let idx = n as usize;
-        if idx >= table.len() {
-            table.resize(idx + 1, 0);
+impl Drop for BatchGenerationHistogram<'_> {
+    fn drop(&mut self) {
+        if self.local.is_empty() {
+            return;
         }
-        table[idx] += 1;
-        min_gen = Some(min_gen.map_or(n, |m| m.min(n)));
-        max_gen = Some(max_gen.map_or(n, |m| m.max(n)));
+        let mut merged = self.shared.lock();
+        if merged.len() < self.local.len() {
+            merged.resize(self.local.len(), 0);
+        }
+        for (dst, &count) in merged.iter_mut().zip(&self.local) {
+            *dst += count;
+        }
+    }
+}
+
+fn sample_generations(generations: &Query<&Generation, CharacterFilter>) -> GenerationSample {
+    let shared: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+    generations.par_iter().for_each_init(
+        || BatchGenerationHistogram {
+            local: Vec::new(),
+            shared: &shared,
+        },
+        |batch, generation| {
+            let idx = generation.number() as usize;
+            if idx >= batch.local.len() {
+                batch.local.resize(idx + 1, 0);
+            }
+            batch.local[idx] += 1;
+        },
+    );
+
+    let table = shared.into_inner();
+    let mut oldest_alive = None;
+    let mut youngest = None;
+    let mut counts = Vec::new();
+
+    for (idx, &count) in table.iter().enumerate() {
+        if count > 0 {
+            let gen_num = idx as u32;
+            if oldest_alive.is_none() {
+                oldest_alive = Some(gen_num);
+            }
+            youngest = Some(gen_num);
+            counts.push((gen_num, count));
+        }
     }
 
-    let counts = if let (Some(min), Some(max)) = (min_gen, max_gen) {
-        (min..=max)
-            .filter_map(|gen_num| {
-                let c = table[gen_num as usize];
-                (c > 0).then_some((gen_num, c))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
     GenerationSample {
-        oldest_alive: min_gen,
-        youngest: max_gen,
+        oldest_alive,
+        youngest,
         counts,
     }
 }
@@ -385,7 +416,7 @@ fn on_world_seeded(
     history.push(HistorySample {
         tick: tick_count.0,
         counts: spatial_grid.total_counts(),
-        generation: sample_generations(generations.iter().copied()),
+        generation: sample_generations(&generations),
     });
 }
 
@@ -402,6 +433,6 @@ fn record_tick_sample(
     history.push(HistorySample {
         tick: tick_count.0,
         counts: spatial_grid.total_counts(),
-        generation: sample_generations(generations.iter().copied()),
+        generation: sample_generations(&generations),
     });
 }

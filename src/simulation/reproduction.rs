@@ -1,11 +1,13 @@
 use core::any::Any;
 use core::fmt;
-use std::sync::Mutex;
 
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
 use rand::RngExt;
-use rand::seq::IndexedRandom;
+use rand::seq::{
+    IndexedRandom,
+    SliceRandom,
+};
 use serde::{
     Deserialize,
     Serialize,
@@ -25,9 +27,11 @@ use super::organism::{
     Generation,
     Herbivore,
     MaxEnergy,
+    Plant,
     Predator,
     ValueAsFood,
 };
+use super::seed::DistributionConfig;
 use super::spatial::SpatialGrid;
 use super::{
     SimulationSystems,
@@ -38,6 +42,17 @@ use crate::grid::{
     GridPosition,
     GridSize,
 };
+
+const MOORE_OFFSETS: [[i16; 2]; 8] = [
+    [-1, -1],
+    [-1, 0],
+    [-1, 1],
+    [0, -1],
+    [0, 1],
+    [1, -1],
+    [1, 0],
+    [1, 1],
+];
 
 pub trait Mutation: fmt::Debug + Any + Sync + Send {
     fn apply(&self, old: &Brain) -> Brain;
@@ -213,71 +228,92 @@ impl Energy {
     }
 }
 
-/// Registers the energy-threshold asexual [`reproduction`] system in [`SimulationSystems::Reproduce`]
+/// Intrinsic per-tick logistic budding rate `r` for surviving [`Plant`]s.
+///
+/// Each surviving plant attempts to bud onto an empty Moore-neighboring tile with probability
+/// `r * (1 - current_plants / max_plants)`, naturally slowing as the population approaches
+/// carrying capacity (`max_plants`) and permanently stopping if all plants go extinct (`0`).
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Resource, Serialize, Deserialize)]
+#[serde(rename = "plant_growth_rate")]
+pub struct PlantGrowthRate(pub f32);
+
+impl Default for PlantGrowthRate {
+    fn default() -> Self {
+        Self(0.1)
+    }
+}
+
+impl From<f32> for PlantGrowthRate {
+    fn from(value: f32) -> Self {
+        Self(value)
+    }
+}
+
+/// Registers the parallel character and plant reproduction systems in [`SimulationSystems::Reproduce`]
 /// within [`SimulationTick`] without inserting configuration [`Resource`]s upfront.
 ///
-/// Used in visual mode where [`ReproductionThreshold`] and [`MutationStrategy`] are inserted
-/// when entering the active simulation state, and included automatically by [`ReproductionPlugin`].
+/// Used in visual mode where [`ReproductionThreshold`], [`MutationStrategy`], and [`PlantGrowthRate`]
+/// are inserted when entering the active simulation state, and included automatically by [`ReproductionPlugin`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DeferredReproductionPlugin;
 
 impl Plugin for DeferredReproductionPlugin {
     fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<TaskPoolPlugin>() {
+            app.add_plugins(TaskPoolPlugin::default());
+        }
+
         app.add_systems(
             SimulationTick,
-            reproduction.in_set(SimulationSystems::Reproduce),
+            (reproduce_characters, reproduce_plants).in_set(SimulationSystems::Reproduce),
         );
     }
 }
 
-/// Swappable reproduction plugin implementing asexual energy-threshold fission with brain mutation.
+/// Swappable reproduction plugin implementing parallel character fission and logistic plant budding.
 ///
-/// Inserts [`ReproductionThreshold`] and [`MutationStrategy`] resources and registers
-/// the reproduction system in [`SimulationSystems::Reproduce`] within [`SimulationTick`].
+/// Inserts [`ReproductionThreshold`], [`MutationStrategy`], and [`PlantGrowthRate`] resources and registers
+/// the reproduction systems in [`SimulationSystems::Reproduce`] within [`SimulationTick`].
 #[derive(Debug, Clone, Copy, Default, bon::Builder)]
 pub struct ReproductionPlugin {
     #[builder(into, default)]
     pub reproduction_threshold: ReproductionThreshold,
     #[builder(into, default)]
     pub mutation_strategy: MutationStrategy,
+    #[builder(into, default)]
+    pub plant_growth_rate: PlantGrowthRate,
 }
 
 impl Plugin for ReproductionPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(self.reproduction_threshold)
             .insert_resource(self.mutation_strategy)
+            .insert_resource(self.plant_growth_rate)
             .add_plugins(DeferredReproductionPlugin);
     }
 }
 
-struct PendingBirth {
-    parent_deceased: Option<(Entity, GridPosition)>,
-    is_herbivore: bool,
-    child_pos: GridPosition,
-    facing: Facing,
-    child_brain: Brain,
-    child_gen: Generation,
-    child_energy: Energy,
-}
-
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-pub(super) fn reproduction(
-    mut commands: Commands,
-    mut spatial_grid: ResMut<SpatialGrid>,
+pub(super) fn reproduce_characters(
+    par_commands: ParallelCommands,
+    spatial_grid: Res<SpatialGrid>,
     field_size: Res<GridSize>,
     repro_threshold: Res<ReproductionThreshold>,
     max_energy: Res<MaxEnergy>,
     mutation_strategy: Res<MutationStrategy>,
     food_values: Option<Res<FoodValues>>,
-    mut query: Query<(
-        Entity,
-        &mut Energy,
-        &Brain,
-        &GridPosition,
-        &Facing,
-        &Generation,
-        Has<Herbivore>,
-    )>,
+    mut query: Query<
+        (
+            Entity,
+            &mut Energy,
+            &Brain,
+            &GridPosition,
+            &Facing,
+            &Generation,
+            Has<Herbivore>,
+        ),
+        Without<Plant>,
+    >,
 ) {
     let herbivore_food = ValueAsFood(
         food_values
@@ -286,7 +322,7 @@ pub(super) fn reproduction(
             .unwrap_or_default()
             .herbivore,
     );
-    let births = Mutex::new(Vec::new());
+
     query.par_iter_mut().for_each(
         |(entity, mut energy, brain, pos, facing, generation, is_herbivore)| {
             if !energy.is_enough_to_reproduce(*repro_threshold, *max_energy) {
@@ -294,76 +330,111 @@ pub(super) fn reproduction(
             }
 
             let mut rng = rand::rng();
-            let offset = *[
-                [-1, -1],
-                [-1, 0],
-                [-1, 1],
-                [0, -1],
-                [0, 1],
-                [1, -1],
-                [1, 0],
-                [1, 1],
-            ]
-            .choose(&mut rng)
-            .unwrap();
+            let offset = *MOORE_OFFSETS.choose(&mut rng).unwrap();
 
             let child_pos = pos.add_wrapping(I16Vec2::from_array(offset), *field_size);
             let child_brain = Mutation::apply(&*mutation_strategy, brain);
             let child_gen = generation.next();
             let res = energy.distribute();
-            let parent_deceased = res.is_deceased().then_some((entity, *pos));
+            let parent_deceased = res.is_deceased();
             let child_energy = res.into_value();
 
-            births.lock().unwrap().push(PendingBirth {
-                parent_deceased,
-                is_herbivore,
-                child_pos,
-                facing: *facing,
-                child_brain,
-                child_gen,
-                child_energy,
+            let entity_kind = if is_herbivore {
+                EntityKind::Herbivore
+            } else {
+                EntityKind::Predator
+            };
+
+            par_commands.command_scope(|mut commands| {
+                if parent_deceased {
+                    commands.entity(entity).despawn();
+                    spatial_grid.remove(*pos, entity, entity_kind);
+                }
+
+                let child = if is_herbivore {
+                    commands
+                        .spawn((
+                            Herbivore,
+                            child_pos,
+                            *facing,
+                            child_brain,
+                            child_gen,
+                            child_energy,
+                            herbivore_food,
+                            SENSORS_HERBIVORE.to_owned(),
+                        ))
+                        .id()
+                } else {
+                    commands
+                        .spawn((
+                            Predator,
+                            child_pos,
+                            *facing,
+                            child_brain,
+                            child_gen,
+                            child_energy,
+                            SENSORS_PREDATOR.to_owned(),
+                        ))
+                        .id()
+                };
+                spatial_grid.insert(child_pos, child, entity_kind);
             });
         },
     );
+}
 
-    for birth in births.into_inner().unwrap() {
-        let entity_kind = if birth.is_herbivore {
-            EntityKind::Herbivore
-        } else {
-            EntityKind::Predator
-        };
+pub(super) fn reproduce_plants(
+    par_commands: ParallelCommands,
+    spatial_grid: Res<SpatialGrid>,
+    field_size: Res<GridSize>,
+    distribution: Option<Res<DistributionConfig>>,
+    plant_growth_rate: Option<Res<PlantGrowthRate>>,
+    food_values: Option<Res<FoodValues>>,
+    plants: Query<&GridPosition, With<Plant>>,
+) {
+    let Some(distribution) = distribution else {
+        return;
+    };
 
-        if let Some((parent_entity, parent_pos)) = birth.parent_deceased {
-            commands.entity(parent_entity).despawn();
-            spatial_grid.remove(parent_pos, parent_entity, entity_kind);
+    let r = plant_growth_rate.map_or_else(|| PlantGrowthRate::default().0, |rate| rate.0);
+    if r <= 0.0 {
+        return;
+    }
+
+    let tiles_total = u32::from(field_size.width()) * u32::from(field_size.height());
+    let max_plants =
+        ((tiles_total as f32 * distribution.plants_fraction()).round() as u32).min(tiles_total);
+    let current_plants = spatial_grid.plant_count();
+    if max_plants == 0 || current_plants == 0 || current_plants >= max_plants {
+        return;
+    }
+
+    let prob = (f64::from(r) * f64::from(max_plants - current_plants) / f64::from(max_plants))
+        .clamp(0.0, 1.0);
+    if prob <= 0.0 {
+        return;
+    }
+
+    let plant_food = ValueAsFood(food_values.as_deref().copied().unwrap_or_default().plant);
+
+    plants.par_iter().for_each(|pos| {
+        let mut rng = rand::rng();
+        if !rng.random_bool(prob) {
+            return;
         }
 
-        let child = if birth.is_herbivore {
-            commands
-                .spawn((
-                    Herbivore,
-                    birth.child_pos,
-                    birth.facing,
-                    birth.child_brain,
-                    birth.child_gen,
-                    birth.child_energy,
-                    herbivore_food,
-                    SENSORS_HERBIVORE.to_owned(),
-                ))
-                .id()
-        } else {
-            commands
-                .spawn((
-                    Predator,
-                    birth.child_pos,
-                    birth.facing,
-                    birth.child_brain,
-                    birth.child_gen,
-                    birth.child_energy,
-                    SENSORS_PREDATOR.to_owned(),
-                ))
-                .id()
-        };
-        spatial_grid.insert(birth.child_pos, child, entity_kind);
-    }
+        let mut offsets = MOORE_OFFSETS;
+        offsets.shuffle(&mut rng);
+
+        for offset in offsets {
+            let candidate = pos.add_wrapping(I16Vec2::from_array(offset), *field_size);
+            if spatial_grid.try_claim_empty_plant_tile(candidate, max_plants) {
+                par_commands.command_scope(|mut commands| {
+                    let child = commands.spawn((Plant, candidate, plant_food)).id();
+                    spatial_grid.push_claimed_entity(candidate, child, EntityKind::Plant);
+                });
+                break;
+            }
+        }
+    });
 }

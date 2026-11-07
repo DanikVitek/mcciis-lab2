@@ -1,5 +1,3 @@
-use bevy::ecs::entity::EntityHashSet;
-use bevy::ecs::relationship::RelationshipSourceCollection;
 use bevy::prelude::*;
 
 use super::brain::{
@@ -12,6 +10,7 @@ use super::brain::{
 use super::organism::{
     ActionCosts,
     Age,
+    ConsumerCount,
     Energy,
     EntityKind,
     Herbivore,
@@ -48,15 +47,17 @@ impl Plugin for SteppingPlugin {
     }
 }
 
-/// Phase 1 (Parallel): Senses the [`SpatialGrid`] snapshot, evaluates each character's [`Brain`]
-/// across all worker threads on Bevy's [`ComputeTaskPool`](bevy::tasks::ComputeTaskPool), and
-/// immediately applies non-lethal [`Action::TurnLeft`] / [`Action::TurnRight`] updates in parallel.
+/// Phase 1 (Parallel, Order-Independent): Every character simultaneously senses the immutable
+/// start-of-tick [`SpatialGrid`] snapshot, evaluates its [`Brain`], applies in-place turns, and
+/// stages movements or atomically registers food consumption targets in [`ConsumerCount`].
 #[allow(clippy::type_complexity)]
 fn decide_actions(
     spatial_grid: Res<SpatialGrid>,
+    field_size: Res<GridSize>,
     action_costs: Res<ActionCosts>,
     mut characters: Query<
         (
+            Entity,
             &GridPosition,
             &mut Facing,
             &mut Energy,
@@ -68,11 +69,23 @@ fn decide_actions(
         ),
         Without<Plant>,
     >,
+    food_consumers: Query<&ConsumerCount, Without<Predator>>,
 ) {
     let turn_cost = action_costs.turn;
+    let go_forward_cost = action_costs.go_forward;
 
     characters.par_iter_mut().for_each(
-        |(pos, mut facing, mut energy, mut age, brain, sensors, mut action, is_herbivore)| {
+        |(
+            entity,
+            pos,
+            mut facing,
+            mut energy,
+            mut age,
+            brain,
+            sensors,
+            mut prepared,
+            is_herbivore,
+        )| {
             let self_kind = if is_herbivore {
                 EntityKind::Herbivore
             } else {
@@ -81,128 +94,126 @@ fn decide_actions(
             let inputs = sense_brain_inputs(&spatial_grid, *pos, *facing, self_kind, sensors);
             let chosen = brain.act_on(inputs);
 
-            // Apply non-lethal in-place turns directly in parallel so `apply_actions` only needs
-            // to process movements, consumption, and lethal energy depletion.
             match chosen {
-                Action::TurnLeft if energy.0 > turn_cost.0 => {
-                    let _ = energy.decrement(turn_cost);
-                    *facing = facing.counterclockwise();
-                    age.increment();
-                    action.0 = None;
+                Action::TurnLeft => {
+                    if !energy.decrement(turn_cost).is_deceased() {
+                        *facing = facing.counterclockwise();
+                        age.increment();
+                    }
+                    *prepared = PreparedAction::None;
                 }
-                Action::TurnRight if energy.0 > turn_cost.0 => {
-                    let _ = energy.decrement(turn_cost);
-                    *facing = facing.clockwise();
-                    age.increment();
-                    action.0 = None;
+                Action::TurnRight => {
+                    if !energy.decrement(turn_cost).is_deceased() {
+                        *facing = facing.clockwise();
+                        age.increment();
+                    }
+                    *prepared = PreparedAction::None;
                 }
-                _ => {
-                    action.0 = Some(chosen);
+                Action::GoForward => {
+                    if !energy.decrement(go_forward_cost).is_deceased() {
+                        let mut next_pos = *pos;
+                        next_pos.add_assign_wrapping_direction(*facing, *field_size);
+                        *prepared = PreparedAction::MoveTo(next_pos);
+                    } else {
+                        *prepared = PreparedAction::None;
+                    }
+                }
+                Action::Consume => {
+                    let target_kind = if is_herbivore {
+                        EntityKind::Plant
+                    } else {
+                        EntityKind::Herbivore
+                    };
+                    let target = spatial_grid
+                        .find_target_in_near(*pos, *facing, sensors.near(), target_kind, entity)
+                        .map(|(target_entity, _)| target_entity);
+                    if let Some(target_entity) = target
+                        && let Ok(consumers) = food_consumers.get(target_entity)
+                    {
+                        consumers.increment();
+                    }
+                    *prepared = PreparedAction::Consume(target);
                 }
             }
         },
     );
 }
 
-/// Phase 2 (Sequential): Resolves movements, consumption, and lethal energy depletion that mutate
-/// [`SpatialGrid`] or other entities.
+/// Phase 2 (Parallel, Order-Independent): Splits targeted [`ValueAsFood`] evenly among all
+/// simultaneous consumers (`food_value / consumer_count`), applies staged movements to
+/// [`SpatialGrid`], and queues despawns via [`ParallelCommands`] for all eaten or starved entities.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn apply_actions(
-    mut commands: Commands,
-    mut spatial_grid: ResMut<SpatialGrid>,
-    field_size: Res<GridSize>,
+    par_commands: ParallelCommands,
+    spatial_grid: Res<SpatialGrid>,
     max_energy: Res<MaxEnergy>,
     action_costs: Res<ActionCosts>,
-    characters: Query<
+    mut characters: Query<
         (
             Entity,
             &mut GridPosition,
-            &Facing,
             &mut Energy,
             &mut Age,
             &mut PreparedAction,
-            &SensorOffsets,
+            Option<&ConsumerCount>,
             Has<Herbivore>,
         ),
         Without<Plant>,
     >,
-    food: Query<&ValueAsFood, Without<Predator>>,
-    mut plant_positions: Query<&mut GridPosition, With<Plant>>,
+    food: Query<(&ValueAsFood, &ConsumerCount), Without<Predator>>,
+    plants: Query<(Entity, &GridPosition, &ConsumerCount), With<Plant>>,
 ) {
-    let mut consumed_herbivores = EntityHashSet::new();
+    let consume_cost = action_costs.consume;
 
-    for (entity, mut pos, facing, mut energy, mut age, mut action, sensors, is_herbivore) in
-        characters
-    {
-        let Some(action) = action.0.take() else {
-            continue;
-        };
-        let self_kind = if is_herbivore {
-            if consumed_herbivores.remove(entity) {
-                continue;
-            }
-            EntityKind::Herbivore
-        } else {
-            EntityKind::Predator
-        };
+    characters.par_iter_mut().for_each(
+        |(entity, mut pos, mut energy, mut age, mut prepared, my_consumers, is_herbivore)| {
+            let self_kind = if is_herbivore {
+                EntityKind::Herbivore
+            } else {
+                EntityKind::Predator
+            };
 
-        match action {
-            Action::TurnLeft | Action::TurnRight => {
-                // Non-lethal turns (`energy.0 > turn_cost.0`) were already applied in `decide_actions`.
-                // Only organisms whose remaining energy could not survive the turn cost reach here.
-                if energy.decrement(action_costs.turn).is_deceased() {
-                    spatial_grid.remove(*pos, entity, self_kind);
-                    commands.entity(entity).despawn();
+            let staged = core::mem::take(&mut *prepared);
+            if let PreparedAction::Consume(maybe_target) = staged {
+                if let Some(target_entity) = maybe_target
+                    && let Ok((food_value, target_consumers)) = food.get(target_entity)
+                {
+                    let count = target_consumers.get();
+                    debug_assert!(count > 0);
+                    let share = ValueAsFood(Energy(food_value.0.0 / count as f32));
+                    energy.increment(share, *max_energy);
                 }
-            }
-            Action::GoForward => {
-                if energy.decrement(action_costs.go_forward).is_deceased() {
-                    spatial_grid.remove(*pos, entity, self_kind);
-                    commands.entity(entity).despawn();
-                } else {
-                    let old_pos = *pos;
-                    pos.add_assign_wrapping_direction(*facing, *field_size);
-                    spatial_grid.move_entity(old_pos, *pos, entity, self_kind);
+                if !energy.decrement(consume_cost).is_deceased() {
                     age.increment();
                 }
             }
-            Action::Consume => {
-                let target_kind = if is_herbivore {
-                    EntityKind::Plant
-                } else {
-                    EntityKind::Herbivore
-                };
-                if let Some((target_entity, target_pos)) = spatial_grid.find_target_in_near(
-                    *pos,
-                    *facing,
-                    sensors.near(),
-                    target_kind,
-                    entity,
-                ) {
-                    if target_kind == EntityKind::Plant {
-                        let new_pos = GridPosition::new(
-                            rand::random_range(0..field_size.width()),
-                            rand::random_range(0..field_size.height()),
-                        );
-                        *plant_positions.get_mut(target_entity).unwrap() = new_pos;
-                        spatial_grid.move_entity(target_pos, new_pos, target_entity, target_kind);
-                    } else {
-                        commands.entity(target_entity).despawn();
-                        spatial_grid.remove(target_pos, target_entity, target_kind);
-                        consumed_herbivores.insert(target_entity);
-                    }
 
-                    let value = food.get(target_entity).unwrap();
-                    energy.increment(*value, *max_energy);
-                }
-
-                if energy.decrement(action_costs.consume).is_deceased() {
-                    spatial_grid.remove(*pos, entity, self_kind);
+            let was_eaten = my_consumers.is_some_and(|c| c.get() > 0);
+            if was_eaten || energy.0 <= 0.0 {
+                spatial_grid.remove(*pos, entity, self_kind);
+                par_commands.command_scope(|mut commands| {
                     commands.entity(entity).despawn();
-                    continue;
-                }
+                });
+                return;
+            }
+
+            if let PreparedAction::MoveTo(next_pos) = staged {
+                let old_pos = *pos;
+                *pos = next_pos;
+                spatial_grid.move_entity(old_pos, next_pos, entity, self_kind);
                 age.increment();
             }
-        }
-    }
+        },
+    );
+
+    plants
+        .par_iter()
+        .for_each(|(plant_entity, pos, consumers)| {
+            if consumers.get() > 0 {
+                spatial_grid.remove(*pos, plant_entity, EntityKind::Plant);
+                par_commands.command_scope(|mut commands| {
+                    commands.entity(plant_entity).despawn();
+                });
+            }
+        });
 }

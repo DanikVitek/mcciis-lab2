@@ -51,6 +51,7 @@ use crate::simulation::{
     DistributionConfig,
     DistributionError,
     MutationStrategy,
+    PlantGrowthRate,
     ReproductionThreshold,
     ResetSimulation,
     SimulationTickCount,
@@ -74,6 +75,7 @@ pub struct SimConfig {
     pub plants_fraction: f32,
     pub herbivores_fraction: f32,
     pub predators_fraction: f32,
+    pub plant_growth_rate: PlantGrowthRate,
     pub initial_energy: InitialEnergy,
     pub max_energy: MaxEnergy,
     pub reproduction_threshold: ReproductionThreshold,
@@ -142,6 +144,10 @@ impl FromWorld for SimConfig {
             .get_resource::<DistributionConfig>()
             .copied()
             .unwrap_or_default();
+        let plant_growth_rate = world
+            .get_resource::<PlantGrowthRate>()
+            .copied()
+            .unwrap_or_default();
         let tick_interval = world
             .get_resource::<Time<Fixed>>()
             .map_or(Duration::from_secs_f64(0.5), Time::<Fixed>::timestep);
@@ -179,6 +185,7 @@ impl FromWorld for SimConfig {
             plants_fraction: dist.plants_fraction(),
             herbivores_fraction: dist.herbivores_fraction(),
             predators_fraction: dist.predators_fraction(),
+            plant_growth_rate,
             initial_energy,
             max_energy,
             reproduction_threshold,
@@ -201,6 +208,7 @@ impl SimConfig {
             plants_fraction: dist.plants_fraction(),
             herbivores_fraction: dist.herbivores_fraction(),
             predators_fraction: dist.predators_fraction(),
+            plant_growth_rate: PlantGrowthRate::default(),
             initial_energy: InitialEnergy::default(),
             max_energy: MaxEnergy::default(),
             reproduction_threshold: ReproductionThreshold::default(),
@@ -269,6 +277,7 @@ impl SimConfig {
         commands.insert_resource(self.grid_size);
         commands.insert_resource(validated);
         commands.insert_resource(SpatialGrid::new(self.grid_size));
+        commands.insert_resource(self.plant_growth_rate);
         commands.insert_resource(self.mutation);
         commands.insert_resource(self.initial_energy);
         commands.insert_resource(self.max_energy);
@@ -305,6 +314,7 @@ impl SimConfig {
 struct LiveLifecycleResources<'w> {
     initial_energy: ResMut<'w, InitialEnergy>,
     max_energy: ResMut<'w, MaxEnergy>,
+    plant_growth_rate: Option<ResMut<'w, PlantGrowthRate>>,
     reproduction_threshold: Option<ResMut<'w, ReproductionThreshold>>,
     mutation_strategy: Option<ResMut<'w, MutationStrategy>>,
     action_costs: Option<ResMut<'w, ActionCosts>>,
@@ -321,6 +331,9 @@ impl LiveLifecycleResources<'_> {
     fn sync_all_from_config(&mut self, config: &SimConfig) {
         *self.initial_energy = config.initial_energy;
         *self.max_energy = config.max_energy;
+        if let Some(ref mut growth) = self.plant_growth_rate {
+            **growth = config.plant_growth_rate;
+        }
         if let Some(ref mut repro) = self.reproduction_threshold {
             **repro = config.reproduction_threshold;
         }
@@ -712,6 +725,13 @@ fn render_initial_setup_ui(
             );
             ui.add_space(4.0);
 
+            ui.add(
+                egui::Slider::new(&mut config.plant_growth_rate.0, 0.0..=1.0)
+                    .text("Algae growth rate")
+                    .fixed_decimals(2),
+            );
+            ui.add_space(2.0);
+
             ui.horizontal(|ui| {
                 ui.label("Initial energy:");
                 ui.add(
@@ -936,6 +956,14 @@ fn render_config_ui(
             if render_settings_persistence_controls(ui, &mut config) {
                 config.apply_pacing(&mut fixed_time, &mut speed_mode);
                 lifecycle.sync_all_from_config(&config);
+                if let Ok(validated) = DistributionConfig::builder()
+                    .plants_fraction(config.plants_fraction)
+                    .herbivores_fraction(config.herbivores_fraction)
+                    .predators_fraction(config.predators_fraction)
+                    .build()
+                {
+                    *distribution = validated;
+                }
             }
             ui.add_space(4.0);
             ui.separator();
@@ -1032,6 +1060,19 @@ fn render_config_ui(
                     .color(egui::Color32::from_rgb(170, 215, 255))
                     .strong(),
             );
+            ui.add_space(4.0);
+
+            if ui
+                .add(
+                    egui::Slider::new(&mut config.plant_growth_rate.0, 0.0..=1.0)
+                        .text("Algae growth rate")
+                        .fixed_decimals(2),
+                )
+                .changed()
+                && let Some(ref mut growth_rate) = lifecycle.plant_growth_rate
+            {
+                **growth_rate = config.plant_growth_rate;
+            }
             ui.add_space(4.0);
 
             let mut initial_energy_changed = false;
@@ -1251,11 +1292,13 @@ fn render_config_ui(
                 }
             });
 
-            ui.add(
-                egui::Slider::new(&mut config.plants_fraction, 0.0..=1.0)
-                    .text("Algae")
-                    .fixed_decimals(2),
-            );
+            let plants_slider_changed = ui
+                .add(
+                    egui::Slider::new(&mut config.plants_fraction, 0.0..=1.0)
+                        .text("Algae")
+                        .fixed_decimals(2),
+                )
+                .changed();
             ui.add(
                 egui::Slider::new(&mut config.herbivores_fraction, 0.0..=1.0)
                     .text("Herbivores")
@@ -1270,6 +1313,17 @@ fn render_config_ui(
             let total_fraction =
                 config.plants_fraction + config.herbivores_fraction + config.predators_fraction;
             let fractions_valid = total_fraction <= 1.0;
+
+            if plants_slider_changed
+                && fractions_valid
+                && let Ok(validated) = DistributionConfig::builder()
+                    .plants_fraction(config.plants_fraction)
+                    .herbivores_fraction(config.herbivores_fraction)
+                    .predators_fraction(config.predators_fraction)
+                    .build()
+            {
+                *distribution = validated;
+            }
 
             if !fractions_valid {
                 ui.colored_label(

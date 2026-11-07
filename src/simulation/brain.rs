@@ -247,8 +247,14 @@ pub enum Action {
     Consume,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Component)]
-pub struct PreparedAction(pub Option<Action>);
+/// Per-tick action staged during parallel `decide_actions` for parallel resolution in `apply_actions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
+pub enum PreparedAction {
+    #[default]
+    None,
+    MoveTo(GridPosition),
+    Consume(Option<Entity>),
+}
 
 impl Action {
     pub const ALL: [Self; OUTPUTS] = [

@@ -31,6 +31,7 @@ pub use self::reproduction::{
     DistributedMutation,
     Mutation,
     MutationStrategy,
+    PlantGrowthRate,
     ReproductionPlugin,
     ReproductionThreshold,
     SingleNeuronMutation,
