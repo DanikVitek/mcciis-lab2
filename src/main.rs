@@ -210,6 +210,45 @@ fn main() -> io::Result<()> {
     }
 }
 
+/// Resolves the `assets` folder across `cargo run`, standalone binaries, and
+/// installed OS bundles (`.msi`, `.deb`, `.rpm`, `.AppImage`).
+fn resolve_asset_folder() -> String {
+    if std::env::var_os("BEVY_ASSET_ROOT").is_some()
+        || std::env::var_os("CARGO_MANIFEST_DIR").is_some()
+    {
+        return "assets".to_owned();
+    }
+
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent()
+    {
+        if exe_dir.join("assets").is_dir() {
+            return "assets".to_owned();
+        }
+
+        for rel in [
+            "../lib/life-sim/assets",
+            "../lib/LifeSim/assets",
+            "../share/life-sim/assets",
+        ] {
+            let candidate = exe_dir.join(rel);
+            if candidate.is_dir() {
+                let resolved = fs::canonicalize(&candidate).unwrap_or(candidate);
+                return resolved.to_string_lossy().into_owned();
+            }
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_assets = cwd.join("assets");
+        if cwd_assets.is_dir() {
+            return cwd_assets.to_string_lossy().into_owned();
+        }
+    }
+
+    "assets".to_owned()
+}
+
 fn run_visual(args: VisualArgs) {
     let mut prefilled_config = SimConfig::load_system_or_default();
     if args.width.is_some() || args.height.is_some() {
@@ -248,6 +287,10 @@ fn run_visual(args: VisualArgs) {
     app.insert_resource(prefilled_config)
         .add_plugins((
             DefaultPlugins
+                .set(AssetPlugin {
+                    file_path: resolve_asset_folder(),
+                    ..default()
+                })
                 .set(ImagePlugin::default_nearest())
                 .set(WindowPlugin {
                     primary_window: Some({

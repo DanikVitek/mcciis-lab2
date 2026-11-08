@@ -1,0 +1,145 @@
+name: Release Bundles
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bundle-linux:
+    name: Bundle Linux (.deb, .rpm, .AppImage)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build and packaging dependencies
+        run: |
+          sudo add-apt-repository universe -y
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxrandr-dev \
+            dpkg-dev \
+            libfuse2t64 \
+            librsvg2-dev \
+            file \
+            patchelf \
+            xdg-utils \
+            desktop-file-utils \
+            squashfs-tools
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Rust packaging tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager,cargo-generate-rpm
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package .deb and .AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          NO_STRIP: "true"
+        run: |
+          mkdir -p dist
+          cargo packager --release --formats deb,appimage
+
+      - name: Package .rpm
+        run: cargo generate-rpm -o dist
+
+      - name: Verify generated Linux bundles
+        run: ls -lh dist/*.deb dist/*.rpm dist/*.AppImage
+
+      - name: Upload Linux bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles-linux-x86_64
+          if-no-files-found: error
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+
+  bundle-windows:
+    name: Bundle Windows (.msi)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-packager
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package .msi installer
+        run: cargo packager --release --formats wix
+
+      - name: Verify generated Windows installer
+        shell: bash
+        run: ls -lh dist/*.msi
+
+      - name: Upload Windows bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles-windows-x86_64
+          if-no-files-found: error
+          path: dist/*.msi
+
+  publish-release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - bundle-linux
+      - bundle-windows
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all bundle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        working-directory: dist
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

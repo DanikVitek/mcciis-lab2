@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=LifeSim
+Comment=Ecosystem evolution simulation
+Exec=life-sim
+Icon=life-sim
+Terminal=false
+Categories=Science;Simulation;Education;
+StartupWMClass=life-sim

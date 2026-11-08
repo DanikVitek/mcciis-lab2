@@ -56,3 +56,29 @@ dynamic_linking = ["bevy/dynamic_linking", "dep:bevy_dylib"]
 
 [lints.clippy]
 disallowed_types = "deny"
+
+[package.metadata.packager]
+product_name = "LifeSim"
+identifier = "io.github.danikvitek.life-sim"
+out_dir = "./dist"
+icons = [
+    "packaging/icons/32x32.png",
+    "packaging/icons/128x128.png",
+    "packaging/icons/256x256.png",
+    "packaging/icons/icon.ico",
+]
+resources = [
+    { src = "./assets", target = "assets" },
+]
+
+[package.metadata.generate-rpm]
+license = "Unlicensed"
+assets = [
+    { source = "target/release/life-sim", dest = "/usr/bin/life-sim", mode = "0755" },
+    { source = "assets/sprites/*", dest = "/usr/lib/life-sim/assets/sprites/", mode = "0644" },
+    { source = "assets/shaders/*", dest = "/usr/lib/life-sim/assets/shaders/", mode = "0644" },
+    { source = "packaging/linux/life-sim.desktop", dest = "/usr/share/applications/life-sim.desktop", mode = "0644" },
+    { source = "packaging/icons/32x32.png", dest = "/usr/share/icons/hicolor/32x32/apps/life-sim.png", mode = "0644" },
+    { source = "packaging/icons/128x128.png", dest = "/usr/share/icons/hicolor/128x128/apps/life-sim.png", mode = "0644" },
+    { source = "packaging/icons/256x256.png", dest = "/usr/share/icons/hicolor/256x256/apps/life-sim.png", mode = "0644" },
+]
