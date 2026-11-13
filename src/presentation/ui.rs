@@ -105,28 +105,43 @@ fn handle_ui_hotkeys(
     }
 }
 
-/// Renders vertical pause bars (`||`) and a `"PAUSED"` label in the center of the viewport
+/// Renders vertical pause bars and a `"PAUSED"` label in the center of the viewport
 /// at [`egui::Order::Background`] so it stays underneath all UI panels and never blocks controls.
-fn render_pause_indicator(mut contexts: EguiContexts) -> Result {
+fn render_pause_indicator(
+    mut contexts: EguiContexts,
+    playback_state: Res<State<SimulationPlaybackState>>,
+    mut next_playback_state: ResMut<NextState<SimulationPlaybackState>>,
+    organisms: Query<(), CharacterFilter>,
+) -> Result {
     let ctx = contexts.ctx_mut()?;
 
-    egui::Area::new(egui::Id::new("center_pause_indicator"))
+    let response = egui::Area::new(egui::Id::new("center_pause_indicator"))
         .order(egui::Order::Background)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .interactable(false)
+        .interactable(!organisms.is_empty())
         .show(ctx, |ui| {
             let desired_size = egui::vec2(140.0, 120.0);
-            let (rect, _) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+            let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
             let painter = ui.painter();
 
             // Subtle translucent backdrop pill behind the pause bars
             painter.rect(
                 rect,
                 egui::CornerRadius::same(18),
-                egui::Color32::from_rgba_unmultiplied(6, 16, 28, 135),
+                egui::Color32::from_rgba_unmultiplied(
+                    6,
+                    16,
+                    28,
+                    135_u8.saturating_add(u8::from(response.hovered()) * (135 / 2)),
+                ),
                 egui::Stroke::new(
                     1.5,
-                    egui::Color32::from_rgba_unmultiplied(120, 185, 240, 110),
+                    egui::Color32::from_rgba_unmultiplied(
+                        120,
+                        185,
+                        240,
+                        110_u8.saturating_add(u8::from(response.hovered()) * (110 / 2)),
+                    ),
                 ),
                 egui::epaint::StrokeKind::Inside,
             );
@@ -135,7 +150,12 @@ fn render_pause_indicator(mut contexts: EguiContexts) -> Result {
             let bar_width = 16.0;
             let bar_height = 52.0;
             let bar_gap = 14.0;
-            let bar_color = egui::Color32::from_rgba_unmultiplied(210, 235, 255, 175);
+            let bar_color = egui::Color32::from_rgba_unmultiplied(
+                210,
+                235,
+                255,
+                175_u8.saturating_add(u8::from(response.hovered()) * (175 / 2)),
+            );
 
             let left_bar = egui::Rect::from_center_size(
                 center - egui::vec2((bar_width + bar_gap) * 0.5, 0.0),
@@ -156,7 +176,12 @@ fn render_pause_indicator(mut contexts: EguiContexts) -> Result {
                 egui::FontId::proportional(15.0),
                 bar_color,
             );
-        });
+        })
+        .response;
+
+    if response.clicked() {
+        toggle_playback_pause(&playback_state, &mut next_playback_state);
+    }
 
     Ok(())
 }
