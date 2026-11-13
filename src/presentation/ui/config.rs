@@ -935,8 +935,8 @@ fn render_config_ui(
             egui::Align2::LEFT_TOP,
             egui::vec2(VIEWPORT_MARGIN, VIEWPORT_MARGIN),
         )
-        .default_width(280.0)
-        .resizable(false)
+        .max_width(280.0)
+        .resizable(true)
         .collapsible(true)
         .frame(
             egui::Frame::window(&ctx.global_style())
@@ -948,6 +948,7 @@ fn render_config_ui(
                 .corner_radius(8.0)
                 .inner_margin(12.0),
         )
+        .vscroll(true)
         .show(ctx, |ui| {
             let totals = inspector.spatial_grid.total_counts();
             let has_organisms = totals.herbivores > 0 || totals.predators > 0;

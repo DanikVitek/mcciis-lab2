@@ -11,10 +11,12 @@ use bevy::input::{
 };
 use bevy::prelude::*;
 use bevy::state::app::StatesPlugin;
+use bevy::transform::TransformPlugin;
 use bevy::window::{
     ExitCondition,
     WindowPlugin,
 };
+use bevy_egui::EguiPrimaryContextPass;
 use life_sim::grid::{
     GridPosition,
     GridSize,
@@ -575,4 +577,104 @@ fn sim_config_saves_loads_and_auto_saves_on_change() {
     assert_eq!(loaded_alt, alt);
 
     let _ = std::fs::remove_file(&temp_path);
+}
+
+#[test]
+fn resetting_while_simulation_is_running_does_not_crash() {
+    #[derive(Resource, Default)]
+    struct TriggerResetNextPass(bool);
+
+    for speed_mode in [SimulationSpeedMode::FixedStep, SimulationSpeedMode::Uncapped] {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            StatesPlugin,
+            AssetPlugin::default(),
+            InputPlugin,
+            TransformPlugin,
+            WindowPlugin {
+                primary_window: Some(Window::default()),
+                exit_condition: ExitCondition::DontExit,
+                ..default()
+            },
+        ))
+        .init_asset::<Image>()
+        .init_asset::<Shader>()
+        .init_asset::<TextureAtlasLayout>()
+        .add_plugins((
+            DeferredSimulationPlugin,
+            DeferredReproductionPlugin,
+            HistoryRecorderPlugin::default(),
+            PresentationPlugin::new(Duration::from_millis(1)),
+        ));
+
+        app.init_resource::<TriggerResetNextPass>();
+        app.add_systems(
+            EguiPrimaryContextPass,
+            (|mut flag: ResMut<TriggerResetNextPass>,
+              config: Res<SimConfig>,
+              mut grid_size: ResMut<GridSize>,
+              mut distribution: ResMut<DistributionConfig>,
+              mut commands: Commands| {
+                if flag.0 {
+                    flag.0 = false;
+                    config
+                        .apply_world_and_reset(&mut commands, &mut grid_size, &mut distribution)
+                        .unwrap();
+                }
+            })
+            .run_if(in_state(AppState::Simulation)),
+        );
+        app.update();
+
+        {
+            let mut config = app.world_mut().resource_mut::<SimConfig>();
+            config.grid_size = GridSize::new(20, 20);
+            config.plants_fraction = 0.25;
+            config.herbivores_fraction = 0.15;
+            config.predators_fraction = 0.10;
+            config.initial_energy = 5.0.into();
+            config.max_energy = 10.0.into();
+            config.tick_interval = Duration::from_millis(1);
+            config.speed_mode = speed_mode;
+        }
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::Simulation);
+
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(2));
+            app.update();
+        }
+
+        // Also test resetting while following a character, and without following.
+        app.world_mut()
+            .run_system_once(
+                |characters: Query<Entity, CharacterFilter>,
+                 mut inspected: ResMut<InspectedCharacter>| {
+                    follow_random_character(&characters, &mut inspected);
+                },
+            )
+            .unwrap();
+        app.update();
+
+        app.world_mut().resource_mut::<TriggerResetNextPass>().0 = true;
+        app.update();
+        assert!(
+            !app.world().resource::<TriggerResetNextPass>().0,
+            "EguiPrimaryContextPass must have run"
+        );
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(2));
+            app.update();
+        }
+
+        app.world_mut().resource_mut::<TriggerResetNextPass>().0 = true;
+        app.update();
+        assert!(!app.world().resource::<TriggerResetNextPass>().0);
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(2));
+            app.update();
+        }
+    }
 }
