@@ -212,7 +212,7 @@ impl Plugin for BrainInspectorUiPlugin {
             )
             .add_systems(
                 EguiPrimaryContextPass,
-                (render_pov_panel, render_neural_network_panel)
+                (render_info_panel, render_neural_network_panel)
                     .run_if(in_state(AppState::Simulation))
                     .run_if(resource_equals(HistoryPlotOpen(false))),
             );
@@ -287,7 +287,7 @@ fn inspector_window_frame(style: &egui::Style) -> egui::Frame {
         .inner_margin(12.0)
 }
 
-fn render_pov_panel(
+fn render_info_panel(
     mut contexts: EguiContexts,
     inspector: CharacterInspector,
     max_energy: Res<MaxEnergy>,
@@ -303,7 +303,7 @@ fn render_pov_panel(
     let mut should_unfollow = false;
     let mut should_follow_random = false;
 
-    egui::Window::new("Organism POV & Sensors")
+    egui::Window::new("Organism Info & Sensors")
         .id(egui::Id::new("inspector_pov_upper_panel"))
         .anchor(
             egui::Align2::RIGHT_TOP,
@@ -315,7 +315,7 @@ fn render_pov_panel(
         .frame(inspector_window_frame(&style))
         .show(ctx, |ui| {
             ui.set_width(INSPECTOR_PANEL_WIDTH);
-            render_pov_panel_contents(
+            render_info_panel_contents(
                 ui,
                 &snapshot,
                 *max_energy,
@@ -376,7 +376,7 @@ fn zone_outline_color32(zone_idx: usize) -> egui::Color32 {
     egui::Color32::from_rgb(r, g, b)
 }
 
-fn render_pov_panel_contents(
+fn render_info_panel_contents(
     ui: &mut egui::Ui,
     snapshot: &CharacterBrainSnapshot<'_>,
     max_energy: MaxEnergy,

@@ -16,7 +16,6 @@ use super::organism::{
     Herbivore,
     MaxEnergy,
     Plant,
-    Predator,
     ValueAsFood,
 };
 use super::spatial::SpatialGrid;
@@ -55,21 +54,18 @@ fn decide_actions(
     spatial_grid: Res<SpatialGrid>,
     field_size: Res<GridSize>,
     action_costs: Res<ActionCosts>,
-    mut characters: Query<
-        (
-            Entity,
-            &GridPosition,
-            &mut Facing,
-            &mut Energy,
-            &mut Age,
-            &Brain,
-            &SensorOffsets,
-            &mut PreparedAction,
-            Has<Herbivore>,
-        ),
-        Without<Plant>,
-    >,
-    food_consumers: Query<&ConsumerCount, Without<Predator>>,
+    mut characters: Query<(
+        Entity,
+        &GridPosition,
+        &mut Facing,
+        &mut Energy,
+        &mut Age,
+        &Brain,
+        &SensorOffsets,
+        &mut PreparedAction,
+        Has<Herbivore>,
+    )>,
+    consumers_count: Query<&ConsumerCount>,
 ) {
     let turn_cost = action_costs.turn;
     let go_forward_cost = action_costs.go_forward;
@@ -128,7 +124,7 @@ fn decide_actions(
                         .find_target_in_near(*pos, *facing, sensors.near(), target_kind, entity)
                         .map(|(target_entity, _)| target_entity);
                     if let Some(target_entity) = target
-                        && let Ok(consumers) = food_consumers.get(target_entity)
+                        && let Ok(consumers) = consumers_count.get(target_entity)
                     {
                         consumers.increment();
                     }
@@ -160,7 +156,7 @@ fn apply_actions(
         ),
         Without<Plant>,
     >,
-    food: Query<(&ValueAsFood, &ConsumerCount), Without<Predator>>,
+    food: Query<(&ValueAsFood, &ConsumerCount)>,
     plants: Query<(Entity, &GridPosition, &ConsumerCount), With<Plant>>,
 ) {
     let consume_cost = action_costs.consume;
@@ -175,9 +171,8 @@ fn apply_actions(
 
             let staged = core::mem::take(&mut *prepared);
             if let PreparedAction::Consume(maybe_target) = staged {
-                if let Some(target_entity) = maybe_target
-                    && let Ok((food_value, target_consumers)) = food.get(target_entity)
-                {
+                if let Some(target_entity) = maybe_target {
+                    let (food_value, target_consumers) = food.get(target_entity).unwrap();
                     let count = target_consumers.get();
                     debug_assert!(count > 0);
                     let share = ValueAsFood(Energy(food_value.0.0 / count as f32));
