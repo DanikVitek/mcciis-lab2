@@ -42,6 +42,7 @@ use crate::grid::{
     GridPosition,
     GridSize,
 };
+use crate::name;
 
 const MOORE_OFFSETS: [[i16; 2]; 8] = [
     [-1, -1],
@@ -352,30 +353,32 @@ pub(super) fn reproduce_characters(
                 }
 
                 let child = if is_herbivore {
-                    commands
-                        .spawn((
-                            Herbivore,
-                            child_pos,
-                            *facing,
-                            child_brain,
-                            child_gen,
-                            child_energy,
-                            herbivore_food,
-                            SENSORS_HERBIVORE.to_owned(),
-                        ))
-                        .id()
+                    let mut entity_commands = commands.spawn((
+                        Herbivore,
+                        child_pos,
+                        *facing,
+                        child_brain,
+                        child_gen,
+                        child_energy,
+                        herbivore_food,
+                        SENSORS_HERBIVORE.to_owned(),
+                    ));
+                    let entity = entity_commands.id();
+                    entity_commands.insert(name!(format!("Herbivore {entity}")));
+                    entity
                 } else {
-                    commands
-                        .spawn((
-                            Predator,
-                            child_pos,
-                            *facing,
-                            child_brain,
-                            child_gen,
-                            child_energy,
-                            SENSORS_PREDATOR.to_owned(),
-                        ))
-                        .id()
+                    let mut entity_commands = commands.spawn((
+                        Predator,
+                        child_pos,
+                        *facing,
+                        child_brain,
+                        child_gen,
+                        child_energy,
+                        SENSORS_PREDATOR.to_owned(),
+                    ));
+                    let entity = entity_commands.id();
+                    entity_commands.insert(name!(format!("Predator {entity}")));
+                    entity
                 };
                 spatial_grid.insert(child_pos, child, entity_kind);
             });
@@ -430,7 +433,12 @@ pub(super) fn reproduce_plants(
             let candidate = pos.add_wrapping(I16Vec2::from_array(offset), *field_size);
             if spatial_grid.try_claim_empty_plant_tile(candidate, max_plants) {
                 par_commands.command_scope(|mut commands| {
-                    let child = commands.spawn((Plant, candidate, plant_food)).id();
+                    let child = {
+                        let mut entity_commands = commands.spawn((Plant, candidate, plant_food));
+                        let entity = entity_commands.id();
+                        entity_commands.insert(name!(format!("Plant {entity}")));
+                        entity
+                    };
                     spatial_grid.push_claimed_entity(candidate, child, EntityKind::Plant);
                 });
                 break;

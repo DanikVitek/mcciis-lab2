@@ -14,6 +14,7 @@ use crate::grid::{
     GridPosition,
     GridSize,
 };
+use crate::name;
 use crate::simulation::brain::{
     SensorOffsets,
     sense_brain_inputs,
@@ -319,6 +320,7 @@ fn setup_visual_root_and_sprites(
     });
 
     commands.spawn((
+        name!("Grid Background"),
         GridBackground,
         Sprite {
             custom_size: Some(placeholder_size.as_vec2() * TILE_SIZE),
@@ -335,6 +337,7 @@ fn setup_visual_root_and_sprites(
     });
 
     commands.spawn((
+        name!("Selection Highlight"),
         SelectionHighlight,
         Sprite {
             custom_size: Some(TILE_SIZE * SELECTION_HIGHLIGHT_SCALE),
@@ -588,6 +591,7 @@ fn spawn_character_pov_overlay(
 
     commands
         .spawn((
+            name!(format!("POV Overlay of {character_entity}")),
             CharacterPovOverlay,
             Transform::default(),
             Visibility::Inherited,

@@ -29,6 +29,7 @@ use crate::grid::{
     GridPosition,
     GridSize,
 };
+use crate::name;
 use crate::simulation::brain::{
     SENSORS_HERBIVORE,
     SENSORS_PREDATOR,
@@ -194,9 +195,15 @@ fn populate_grid(
             }
             PLANT => {
                 let pos = GridPosition::new(x, y);
-                let entity = commands
-                    .spawn((Plant, pos, ValueAsFood(food_values.plant)))
-                    .id();
+
+                let entity = {
+                    let mut entity_commands =
+                        commands.spawn((Plant, pos, ValueAsFood(food_values.plant)));
+                    let entity = entity_commands.id();
+                    entity_commands.insert(name!(format!("Plant {entity}")));
+                    entity
+                };
+
                 spatial_grid.insert(pos, entity, EntityKind::Plant);
                 plants_total -= 1;
                 match dist.update_weights(&[(1, &plants_total)]) {
@@ -210,16 +217,19 @@ fn populate_grid(
                 let dir = rng.random::<Facing>();
                 match idx {
                     HERBIVORE => {
-                        let entity = commands
-                            .spawn((
+                        let entity = {
+                            let mut entity_commands = commands.spawn((
                                 Herbivore,
                                 pos,
                                 dir,
                                 Energy::from(initial_energy),
                                 ValueAsFood(food_values.herbivore),
                                 SENSORS_HERBIVORE.to_owned(),
-                            ))
-                            .id();
+                            ));
+                            let entity = entity_commands.id();
+                            entity_commands.insert(name!(format!("Herbivore {entity}")));
+                            entity
+                        };
                         spatial_grid.insert(pos, entity, EntityKind::Herbivore);
                         herbivores_total -= 1;
                         match dist.update_weights(&[(2, &herbivores_total)]) {
@@ -229,15 +239,18 @@ fn populate_grid(
                         }
                     }
                     PREDATOR => {
-                        let entity = commands
-                            .spawn((
+                        let entity = {
+                            let mut entity_commands = commands.spawn((
                                 Predator,
                                 pos,
                                 dir,
                                 Energy::from(initial_energy),
                                 SENSORS_PREDATOR.to_owned(),
-                            ))
-                            .id();
+                            ));
+                            let entity = entity_commands.id();
+                            entity_commands.insert(name!(format!("Predator {entity}")));
+                            entity
+                        };
                         spatial_grid.insert(pos, entity, EntityKind::Predator);
                         predators_total -= 1;
                         match dist.update_weights(&[(3, &predators_total)]) {
