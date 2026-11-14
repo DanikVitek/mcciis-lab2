@@ -303,18 +303,15 @@ pub(super) fn reproduce_characters(
     max_energy: Res<MaxEnergy>,
     mutation_strategy: Res<MutationStrategy>,
     food_values: Option<Res<FoodValues>>,
-    mut query: Query<
-        (
-            Entity,
-            &mut Energy,
-            &Brain,
-            &GridPosition,
-            &Facing,
-            &Generation,
-            Has<Herbivore>,
-        ),
-        Without<Plant>,
-    >,
+    mut query: Query<(
+        Entity,
+        &mut Energy,
+        &Brain,
+        &GridPosition,
+        &Facing,
+        &Generation,
+        Has<Herbivore>,
+    )>,
 ) {
     let herbivore_food = ValueAsFood(
         food_values
@@ -431,7 +428,9 @@ pub(super) fn reproduce_plants(
 
         for offset in offsets {
             let candidate = pos.add_wrapping(I16Vec2::from_array(offset), *field_size);
-            if spatial_grid.try_claim_empty_plant_tile(candidate, max_plants) {
+            if let Some(claim_token) =
+                spatial_grid.try_claim_empty_tile(candidate, EntityKind::Plant, max_plants)
+            {
                 par_commands.command_scope(|mut commands| {
                     let child = {
                         let mut entity_commands = commands.spawn((Plant, candidate, plant_food));
@@ -439,7 +438,7 @@ pub(super) fn reproduce_plants(
                         entity_commands.insert(name!(format!("Plant {entity}")));
                         entity
                     };
-                    spatial_grid.push_claimed_entity(candidate, child, EntityKind::Plant);
+                    spatial_grid.push_claimed_entity(claim_token, child);
                 });
                 break;
             }

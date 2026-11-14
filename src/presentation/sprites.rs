@@ -603,7 +603,7 @@ fn spawn_character_pov_overlay(
             let thickness = POV_OUTLINE_THICKNESS;
             let half_t = thickness * 0.5;
 
-            for (zone_idx, &offsets) in zones.iter().enumerate() {
+            for (zone_idx, offsets) in zones.into_iter().enumerate() {
                 let fill_z = POV_FILL_LOCAL_Z + zone_idx as f32 * 0.01;
                 let outline_z = POV_OUTLINE_LOCAL_Z + zone_idx as f32 * 0.01;
                 let [r, g, b] = POV_ZONE_OUTLINE_COLORS[zone_idx];

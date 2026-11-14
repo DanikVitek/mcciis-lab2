@@ -1,4 +1,6 @@
 use core::iter::Sum;
+use core::marker::PhantomData;
+use core::mem;
 use core::ops::{
     AddAssign,
     Index,
@@ -250,33 +252,40 @@ impl SpatialGrid {
     /// Atomically claims `pos` for a newborn [`EntityKind::Plant`] if `pos` currently has `0` plants
     /// and total grid plants are strictly below `max_plants`.
     ///
-    /// When this returns `true`, the caller MUST register the spawned entity via [`Self::push_claimed_entity`].
-    pub fn try_claim_empty_plant_tile(&self, pos: GridPosition, max_plants: u32) -> bool {
+    /// When this returns `Some(token)`, the caller MUST register the spawned entity via [`Self::push_claimed_entity`] using this `token`.
+    pub fn try_claim_empty_tile(
+        &self,
+        pos: GridPosition,
+        kind: EntityKind,
+        max_amount: u32,
+    ) -> Option<ClaimToken<'_>> {
         let i = self.idx(pos);
-        if self.counts[i]
-            .plants
+        if self.counts[i][kind]
             .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
             .is_err()
         {
-            return false;
+            return None;
         }
-        if self
-            .total_counts
-            .plants
+        if self.total_counts[kind]
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |curr| {
-                (curr < max_plants).then_some(curr + 1)
+                (curr < max_amount).then_some(curr + 1)
             })
             .is_err()
         {
-            self.counts[i].plants.store(0, Ordering::Relaxed);
-            return false;
+            self.counts[i][kind].store(0, Ordering::Relaxed);
+            return None;
         }
-        true
+        Some(ClaimToken {
+            pos,
+            kind,
+            _marker: PhantomData,
+        })
     }
 
     /// Appends `entity` to `pos`'s entity list after its cell and total counts were already incremented
     /// (e.g. via [`Self::try_claim_empty_plant_tile`]).
-    pub fn push_claimed_entity(&self, pos: GridPosition, entity: Entity, kind: EntityKind) {
+    pub fn push_claimed_entity(&self, claim_token: ClaimToken<'_>, entity: Entity) {
+        let (pos, kind) = claim_token.consume();
         let i = self.idx(pos);
         self.entities[i].write().push((entity, kind));
     }
@@ -398,5 +407,27 @@ impl SpatialGrid {
         self.total_counts
             .as_ref()
             .map(|c| c.load(Ordering::Relaxed))
+    }
+}
+
+#[must_use]
+pub struct ClaimToken<'sp> {
+    pos: GridPosition,
+    kind: EntityKind,
+    _marker: PhantomData<&'sp SpatialGrid>,
+}
+
+impl Drop for ClaimToken<'_> {
+    fn drop(&mut self) {
+        panic!("The slot was not claimed")
+    }
+}
+
+impl ClaimToken<'_> {
+    fn consume(self) -> (GridPosition, EntityKind) {
+        let pos = self.pos;
+        let kind = self.kind;
+        mem::forget(self);
+        (pos, kind)
     }
 }
