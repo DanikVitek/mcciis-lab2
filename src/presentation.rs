@@ -5,7 +5,9 @@ pub mod ui;
 
 use std::time::Duration;
 
+use bevy::asset::AssetEventSystems;
 use bevy::prelude::*;
+use bevy_egui::EguiPostUpdateSet;
 
 use self::camera::{
     CameraPlugin,
@@ -17,7 +19,10 @@ pub use self::pacing::{
     SimulationPlaybackState,
     SimulationSpeedMode,
 };
-use self::sprites::SpritesPlugin;
+use self::sprites::{
+    SpriteTransformSystems,
+    SpritesPlugin,
+};
 use self::ui::{
     UiPlugin,
     UiSystems,
@@ -52,6 +57,15 @@ impl Plugin for PresentationPlugin {
                 CameraSystems.run_if(in_state(AppState::Simulation)),
             )
                 .chain_weak(),
+        )
+        .configure_sets(
+            PostUpdate,
+            (
+                AssetEventSystems,
+                EguiPostUpdateSet::EndPass,
+                SpriteTransformSystems,
+            )
+                .chain(),
         )
         .add_plugins((
             SimulationPacingPlugin::new(self.initial_tick_interval),

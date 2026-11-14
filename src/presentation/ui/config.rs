@@ -13,6 +13,7 @@ use bevy_egui::egui::{
 };
 use bevy_egui::{
     EguiContexts,
+    EguiPostUpdateSet,
     EguiPrimaryContextPass,
 };
 use serde::{
@@ -384,7 +385,8 @@ impl Plugin for SimConfigUiPlugin {
                 (
                     sync_food_values_to_entities.run_if(in_state(AppState::Simulation)),
                     auto_save_settings_system,
-                ),
+                )
+                    .after(EguiPostUpdateSet::EndPass),
             );
     }
 }

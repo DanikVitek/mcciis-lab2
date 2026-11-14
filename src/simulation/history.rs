@@ -45,6 +45,7 @@ pub struct HistorySample {
 /// (both on initial startup and on [`super::ResetSimulation`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
 pub struct SimulationHistory {
+    epoch: u64,
     last_tick: Option<u64>,
     tick: Vec<u64>,
     counts: CellCounts<Vec<u32>>,
@@ -52,6 +53,11 @@ pub struct SimulationHistory {
 }
 
 impl SimulationHistory {
+    /// Monotonically increasing run counter incremented on every [`Self::clear`] call.
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     pub fn tick_history(&self) -> &[u64] {
         &self.tick
     }
@@ -152,6 +158,7 @@ impl SimulationHistory {
     }
 
     pub fn clear(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
         self.last_tick = None;
         self.tick.clear();
         self.counts.as_mut().for_each(Vec::clear);

@@ -59,6 +59,22 @@ args = ["build", "--release"]
 clear = true
 dependencies = ["build-dev", "build-prod"]
 
+[tasks.check-dev]
+private = true
+condition = { profiles = ["development"] }
+command = "cargo"
+args = ["clippy", "--all-targets", "-F", "dev", "${@}"]
+
+[tasks.check-prod]
+private = true
+condition = { profiles = ["production"] }
+command = "cargo"
+args = ["clippy", "--all-targets", "--release", "${@}"]
+
+[tasks.check]
+clear = true
+dependencies = ["check-dev", "check-prod"]
+
 [tasks.run-dev]
 private = true
 condition = { profiles = ["development"] }

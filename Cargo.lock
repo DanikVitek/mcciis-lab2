@@ -3765,7 +3765,7 @@ dependencies = [
 
 [[package]]
 name = "life-sim"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy",
  "bevy_egui",

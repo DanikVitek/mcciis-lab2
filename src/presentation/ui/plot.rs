@@ -59,6 +59,7 @@ struct GenSeries {
 
 #[derive(Default)]
 struct PlotDataCache {
+    epoch: Option<u64>,
     first_tick: Option<u64>,
     processed_samples: usize,
     plants: Vec<[f64; 2]>,
@@ -73,6 +74,7 @@ struct PlotDataCache {
 
 impl PlotDataCache {
     fn clear(&mut self) {
+        self.epoch = None;
         self.first_tick = None;
         self.processed_samples = 0;
         self.plants.clear();
@@ -89,15 +91,19 @@ impl PlotDataCache {
     fn sync(&mut self, history: &SimulationHistory) -> bool {
         let ticks = history.tick_history();
         if ticks.is_empty() {
-            let was_non_empty = self.processed_samples > 0;
+            let was_non_empty = self.processed_samples > 0 || self.epoch.is_some();
             self.clear();
             return was_non_empty;
         }
 
+        let current_epoch = Some(history.epoch());
         let current_first = ticks.first().copied();
-        let was_reset = self.first_tick != current_first || ticks.len() < self.processed_samples;
+        let was_reset = self.epoch != current_epoch
+            || self.first_tick != current_first
+            || ticks.len() < self.processed_samples;
         if was_reset {
             self.clear();
+            self.epoch = current_epoch;
             self.first_tick = current_first;
         }
 
@@ -189,6 +195,8 @@ struct PlotUiState {
     hidden: HashSet<SeriesKey>,
     hovered: Option<SeriesKey>,
     last_legend_rect: Option<egui::Rect>,
+    reset_population_plot: bool,
+    reset_generations_plot: bool,
 }
 
 pub struct HistoryPlotUiPlugin;
@@ -261,8 +269,8 @@ fn build_decimated_plot_points(
     };
 
     let vis = &base[vis_start..vis_end];
-    let include_tail = tail.filter(|tp| {
-        !cull_offscreen || vis.last().is_none_or(|lp| lp[0] <= vx_max) || tp[0] >= vx_min
+    let include_tail = tail.filter(|_| {
+        !cull_offscreen || (vis_end == base.len() && vis.last().is_none_or(|lp| lp[0] <= vx_max))
     });
 
     let view_span = (vx_max - vx_min).max(1.0);
@@ -659,6 +667,8 @@ fn render_history_plot_ui(
 
             if state.cache.sync(&history) {
                 state.hidden.retain(|key| !matches!(key, SeriesKey::Gen(_)));
+                state.reset_population_plot = true;
+                state.reset_generations_plot = true;
             }
 
             let ticks = history.tick_history();
@@ -680,7 +690,7 @@ fn render_history_plot_ui(
 
             let plot_canvas_rect = match active_tab {
                 HistoryPlotTab::Population => {
-                    Plot::new("ecosystem_history_plot")
+                    let mut plot = Plot::new("ecosystem_history_plot")
                         .x_axis_label("Simulation Tick")
                         .y_axis_label("Organism Count")
                         .include_y(0.0)
@@ -688,98 +698,100 @@ fn render_history_plot_ui(
                         .allow_drag(!pointer_over_legend)
                         .allow_zoom(!pointer_over_legend)
                         .allow_boxed_zoom(!pointer_over_legend)
-                        .allow_double_click_reset(!pointer_over_legend)
-                        .show(ui, |plot_ui| {
-                            let bounds = plot_ui.plot_bounds();
-                            let auto = plot_ui.auto_bounds().any();
-                            let cull_offscreen =
-                                !auto && bounds.is_valid_x() && bounds.width() > 0.0;
-                            let view_x = if cull_offscreen {
-                                (bounds.min()[0], bounds.max()[0])
-                            } else {
-                                (global_min_x, global_max_x)
-                            };
-                            let plot_width_px =
-                                f64::from(plot_ui.transform().frame().width().max(200.0));
+                        .allow_double_click_reset(!pointer_over_legend);
+                    if std::mem::take(&mut state.reset_population_plot) {
+                        plot = plot.reset();
+                    }
+                    plot.show(ui, |plot_ui| {
+                        let bounds = plot_ui.plot_bounds();
+                        let auto = plot_ui.auto_bounds().any();
+                        let cull_offscreen = !auto && bounds.is_valid_x() && bounds.width() > 0.0;
+                        let view_x = if cull_offscreen {
+                            (bounds.min()[0], bounds.max()[0])
+                        } else {
+                            (global_min_x, global_max_x)
+                        };
+                        let plot_width_px =
+                            f64::from(plot_ui.transform().frame().width().max(200.0));
 
-                            if !state.hidden.contains(&SeriesKey::Plants)
-                                && let Some(pts) = build_decimated_plot_points(
-                                    &state.cache.plants,
-                                    tail_for_dense_series(&state.cache.plants, last_tick),
-                                    view_x,
-                                    cull_offscreen,
-                                    plot_width_px,
-                                )
-                            {
+                        if !state.hidden.contains(&SeriesKey::Plants)
+                            && let Some(pts) = build_decimated_plot_points(
+                                &state.cache.plants,
+                                tail_for_dense_series(&state.cache.plants, last_tick),
+                                view_x,
+                                cull_offscreen,
+                                plot_width_px,
+                            )
+                        {
+                            plot_ui.line(
+                                Line::new("Algae (Plants)", pts)
+                                    .color(COLOR_PLANTS)
+                                    .width(2.0)
+                                    .highlight(hovered == Some(SeriesKey::Plants)),
+                            );
+                        }
+
+                        if !state.hidden.contains(&SeriesKey::Herbivores)
+                            && let Some(pts) = build_decimated_plot_points(
+                                &state.cache.herbivores,
+                                tail_for_dense_series(&state.cache.herbivores, last_tick),
+                                view_x,
+                                cull_offscreen,
+                                plot_width_px,
+                            )
+                        {
+                            plot_ui.line(
+                                Line::new("Herbivores", pts)
+                                    .color(COLOR_HERBIVORES)
+                                    .width(2.0)
+                                    .highlight(hovered == Some(SeriesKey::Herbivores)),
+                            );
+                        }
+
+                        if !state.hidden.contains(&SeriesKey::Predators)
+                            && let Some(pts) = build_decimated_plot_points(
+                                &state.cache.predators,
+                                tail_for_dense_series(&state.cache.predators, last_tick),
+                                view_x,
+                                cull_offscreen,
+                                plot_width_px,
+                            )
+                        {
+                            plot_ui.line(
+                                Line::new("Predators", pts)
+                                    .color(COLOR_PREDATORS)
+                                    .width(2.0)
+                                    .highlight(hovered == Some(SeriesKey::Predators)),
+                            );
+                        }
+
+                        for gen_series in &state.cache.gens {
+                            let key = SeriesKey::Gen(gen_series.gen_num);
+                            if state.hidden.contains(&key) {
+                                continue;
+                            }
+                            let tail = tail_for_gen_series(gen_series, ticks, last_tick);
+                            if let Some(pts) = build_decimated_plot_points(
+                                &gen_series.points,
+                                tail,
+                                view_x,
+                                cull_offscreen,
+                                plot_width_px,
+                            ) {
                                 plot_ui.line(
-                                    Line::new("Algae (Plants)", pts)
-                                        .color(COLOR_PLANTS)
-                                        .width(2.0)
-                                        .highlight(hovered == Some(SeriesKey::Plants)),
+                                    Line::new(&gen_series.label, pts)
+                                        .color(gen_series.color)
+                                        .width(1.4)
+                                        .highlight(hovered == Some(key)),
                                 );
                             }
-
-                            if !state.hidden.contains(&SeriesKey::Herbivores)
-                                && let Some(pts) = build_decimated_plot_points(
-                                    &state.cache.herbivores,
-                                    tail_for_dense_series(&state.cache.herbivores, last_tick),
-                                    view_x,
-                                    cull_offscreen,
-                                    plot_width_px,
-                                )
-                            {
-                                plot_ui.line(
-                                    Line::new("Herbivores", pts)
-                                        .color(COLOR_HERBIVORES)
-                                        .width(2.0)
-                                        .highlight(hovered == Some(SeriesKey::Herbivores)),
-                                );
-                            }
-
-                            if !state.hidden.contains(&SeriesKey::Predators)
-                                && let Some(pts) = build_decimated_plot_points(
-                                    &state.cache.predators,
-                                    tail_for_dense_series(&state.cache.predators, last_tick),
-                                    view_x,
-                                    cull_offscreen,
-                                    plot_width_px,
-                                )
-                            {
-                                plot_ui.line(
-                                    Line::new("Predators", pts)
-                                        .color(COLOR_PREDATORS)
-                                        .width(2.0)
-                                        .highlight(hovered == Some(SeriesKey::Predators)),
-                                );
-                            }
-
-                            for gen_series in &state.cache.gens {
-                                let key = SeriesKey::Gen(gen_series.gen_num);
-                                if state.hidden.contains(&key) {
-                                    continue;
-                                }
-                                let tail = tail_for_gen_series(gen_series, ticks, last_tick);
-                                if let Some(pts) = build_decimated_plot_points(
-                                    &gen_series.points,
-                                    tail,
-                                    view_x,
-                                    cull_offscreen,
-                                    plot_width_px,
-                                ) {
-                                    plot_ui.line(
-                                        Line::new(&gen_series.label, pts)
-                                            .color(gen_series.color)
-                                            .width(1.4)
-                                            .highlight(hovered == Some(key)),
-                                    );
-                                }
-                            }
-                        })
-                        .response
-                        .rect
+                        }
+                    })
+                    .response
+                    .rect
                 }
                 HistoryPlotTab::Generations => {
-                    Plot::new("generations_history_plot")
+                    let mut plot = Plot::new("generations_history_plot")
                         .x_axis_label("Simulation Tick")
                         .y_axis_label("Generation Number")
                         .include_y(0.0)
@@ -787,56 +799,58 @@ fn render_history_plot_ui(
                         .allow_drag(!pointer_over_legend)
                         .allow_zoom(!pointer_over_legend)
                         .allow_boxed_zoom(!pointer_over_legend)
-                        .allow_double_click_reset(!pointer_over_legend)
-                        .show(ui, |plot_ui| {
-                            let bounds = plot_ui.plot_bounds();
-                            let auto = plot_ui.auto_bounds().any();
-                            let cull_offscreen =
-                                !auto && bounds.is_valid_x() && bounds.width() > 0.0;
-                            let view_x = if cull_offscreen {
-                                (bounds.min()[0], bounds.max()[0])
-                            } else {
-                                (global_min_x, global_max_x)
-                            };
-                            let plot_width_px =
-                                f64::from(plot_ui.transform().frame().width().max(200.0));
+                        .allow_double_click_reset(!pointer_over_legend);
+                    if std::mem::take(&mut state.reset_generations_plot) {
+                        plot = plot.reset();
+                    }
+                    plot.show(ui, |plot_ui| {
+                        let bounds = plot_ui.plot_bounds();
+                        let auto = plot_ui.auto_bounds().any();
+                        let cull_offscreen = !auto && bounds.is_valid_x() && bounds.width() > 0.0;
+                        let view_x = if cull_offscreen {
+                            (bounds.min()[0], bounds.max()[0])
+                        } else {
+                            (global_min_x, global_max_x)
+                        };
+                        let plot_width_px =
+                            f64::from(plot_ui.transform().frame().width().max(200.0));
 
-                            if !state.hidden.contains(&SeriesKey::YoungestGen)
-                                && let Some(pts) = build_decimated_plot_points(
-                                    &state.cache.youngest,
-                                    tail_for_dense_series(&state.cache.youngest, last_tick),
-                                    view_x,
-                                    cull_offscreen,
-                                    plot_width_px,
-                                )
-                            {
-                                plot_ui.line(
-                                    Line::new("Youngest Generation", pts)
-                                        .color(COLOR_YOUNGEST_GEN)
-                                        .width(2.5)
-                                        .highlight(hovered == Some(SeriesKey::YoungestGen)),
-                                );
-                            }
+                        if !state.hidden.contains(&SeriesKey::YoungestGen)
+                            && let Some(pts) = build_decimated_plot_points(
+                                &state.cache.youngest,
+                                tail_for_dense_series(&state.cache.youngest, last_tick),
+                                view_x,
+                                cull_offscreen,
+                                plot_width_px,
+                            )
+                        {
+                            plot_ui.line(
+                                Line::new("Youngest Generation", pts)
+                                    .color(COLOR_YOUNGEST_GEN)
+                                    .width(2.5)
+                                    .highlight(hovered == Some(SeriesKey::YoungestGen)),
+                            );
+                        }
 
-                            if !state.hidden.contains(&SeriesKey::OldestGen)
-                                && let Some(pts) = build_decimated_plot_points(
-                                    &state.cache.oldest,
-                                    tail_for_dense_series(&state.cache.oldest, last_tick),
-                                    view_x,
-                                    cull_offscreen,
-                                    plot_width_px,
-                                )
-                            {
-                                plot_ui.line(
-                                    Line::new("Oldest Alive Generation", pts)
-                                        .color(COLOR_OLDEST_GEN)
-                                        .width(2.5)
-                                        .highlight(hovered == Some(SeriesKey::OldestGen)),
-                                );
-                            }
-                        })
-                        .response
-                        .rect
+                        if !state.hidden.contains(&SeriesKey::OldestGen)
+                            && let Some(pts) = build_decimated_plot_points(
+                                &state.cache.oldest,
+                                tail_for_dense_series(&state.cache.oldest, last_tick),
+                                view_x,
+                                cull_offscreen,
+                                plot_width_px,
+                            )
+                        {
+                            plot_ui.line(
+                                Line::new("Oldest Alive Generation", pts)
+                                    .color(COLOR_OLDEST_GEN)
+                                    .width(2.5)
+                                    .highlight(hovered == Some(SeriesKey::OldestGen)),
+                            );
+                        }
+                    })
+                    .response
+                    .rect
                 }
             };
 
@@ -846,6 +860,7 @@ fn render_history_plot_ui(
                 ref mut hidden,
                 ref mut hovered,
                 ref mut last_legend_rect,
+                ..
             } = *state;
 
             *last_legend_rect = Some(render_scrollable_legend_overlay(
@@ -859,4 +874,98 @@ fn render_history_plot_ui(
         });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::history::{
+        GenerationSample,
+        HistorySample,
+    };
+    use crate::simulation::spatial::CellCounts;
+
+    #[test]
+    fn plot_cache_detects_reset_even_when_new_run_has_more_samples_than_previous_run() {
+        let mut history = SimulationHistory::default();
+        let mut cache = PlotDataCache::default();
+
+        // Run 1: seeded at tick 0, then samples at ticks 100 and 200 (3 samples total).
+        history.clear();
+        for (tick, plants) in [(0, 10), (100, 20), (200, 30)] {
+            history.push(HistorySample {
+                tick,
+                counts: CellCounts {
+                    plants,
+                    herbivores: 5,
+                    predators: 2,
+                },
+                generation: GenerationSample {
+                    oldest_alive: Some(1),
+                    youngest: Some(2),
+                    counts: vec![(1, 3), (2, 4)],
+                },
+            });
+        }
+
+        assert!(cache.sync(&history));
+        assert_eq!(
+            cache.plants,
+            vec![[0.0, 10.0], [100.0, 20.0], [200.0, 30.0]]
+        );
+
+        // While the plot modal is closed, the user resets the world (`history.clear()`)
+        // and Run 2 accumulates MORE samples (4 samples: ticks 0, 1, 2, 3) before the plot is reopened.
+        history.clear();
+        for (tick, plants) in [(0, 50), (1, 51), (2, 52), (3, 53)] {
+            history.push(HistorySample {
+                tick,
+                counts: CellCounts {
+                    plants,
+                    herbivores: 8,
+                    predators: 1,
+                },
+                generation: GenerationSample {
+                    oldest_alive: Some(1),
+                    youngest: Some(1),
+                    counts: vec![(1, 9)],
+                },
+            });
+        }
+
+        // Re-syncing must detect the reset via `history.epoch()`, discard Run 1's `[0, 100, 200]` samples,
+        // and never produce backward X coordinates (`200.0 -> 3.0`).
+        assert!(cache.sync(&history));
+        assert_eq!(
+            cache.plants,
+            vec![[0.0, 50.0], [1.0, 51.0], [2.0, 52.0], [3.0, 53.0]]
+        );
+        assert!(
+            cache.plants.windows(2).all(|pair| pair[0][0] < pair[1][0]),
+            "plant series X coordinates must be strictly increasing: {:?}",
+            cache.plants
+        );
+    }
+
+    #[test]
+    fn decimated_plot_points_do_not_append_far_tail_when_zoomed_into_earlier_range() {
+        let base = vec![
+            [0.0, 10.0],
+            [10.0, 15.0],
+            [20.0, 12.0],
+            [30.0, 18.0],
+            [40.0, 25.0],
+        ];
+        let tail = Some([100.0, 25.0]);
+
+        // Zoomed into [5.0, 15.0]: `vis` covers `[0.0, 10.0, 20.0]` (`vis_end = 3 < base.len()`).
+        // `tail` at `x = 100.0` must NOT be appended after `x = 20.0`.
+        let pts = build_decimated_plot_points(&base, tail, (5.0, 15.0), true, 400.0)
+            .expect("visible points");
+        let PlotPoints::Owned(vec) = pts else {
+            panic!("expected owned PlotPoints");
+        };
+        let xs: Vec<f64> = vec.iter().map(|p| p.x).collect();
+        assert_eq!(xs, vec![0.0, 10.0, 20.0]);
+    }
 }

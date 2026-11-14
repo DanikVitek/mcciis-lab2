@@ -10,6 +10,7 @@ use bevy::input::{
     InputPlugin,
 };
 use bevy::prelude::*;
+use bevy::sprite_render::SpriteMeshPlugin;
 use bevy::state::app::StatesPlugin;
 use bevy::transform::TransformPlugin;
 use bevy::window::{
@@ -584,7 +585,10 @@ fn resetting_while_simulation_is_running_does_not_crash() {
     #[derive(Resource, Default)]
     struct TriggerResetNextPass(bool);
 
-    for speed_mode in [SimulationSpeedMode::FixedStep, SimulationSpeedMode::Uncapped] {
+    for speed_mode in [
+        SimulationSpeedMode::FixedStep,
+        SimulationSpeedMode::Uncapped,
+    ] {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -599,9 +603,11 @@ fn resetting_while_simulation_is_running_does_not_crash() {
             },
         ))
         .init_asset::<Image>()
+        .init_asset::<Mesh>()
         .init_asset::<Shader>()
         .init_asset::<TextureAtlasLayout>()
         .add_plugins((
+            SpriteMeshPlugin,
             DeferredSimulationPlugin,
             DeferredReproductionPlugin,
             HistoryRecorderPlugin::default(),
@@ -635,6 +641,7 @@ fn resetting_while_simulation_is_running_does_not_crash() {
             config.predators_fraction = 0.10;
             config.initial_energy = 5.0.into();
             config.max_energy = 10.0.into();
+            config.reproduction_threshold = ReproductionThreshold::Absolute(Energy(5.0));
             config.tick_interval = Duration::from_millis(1);
             config.speed_mode = speed_mode;
         }

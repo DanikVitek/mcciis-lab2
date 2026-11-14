@@ -2,11 +2,13 @@ pub mod config;
 pub mod inspector;
 pub mod plot;
 
+use bevy::asset::AssetEventSystems;
 use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
 use bevy_egui::{
     EguiContexts,
     EguiPlugin,
+    EguiPostUpdateSet,
     EguiPrimaryContextPass,
     egui,
 };
@@ -51,6 +53,10 @@ impl Plugin for UiPlugin {
         }
 
         app.init_resource::<HistoryPlotOpen>()
+            .configure_sets(
+                PostUpdate,
+                EguiPostUpdateSet::EndPass.after(AssetEventSystems),
+            )
             .add_plugins((
                 SimConfigUiPlugin,
                 BrainInspectorUiPlugin,
