@@ -1,6 +1,6 @@
 use core::iter::Sum;
 use core::marker::PhantomData;
-use core::mem;
+use core::mem::ManuallyDrop;
 use core::ops::{
     AddAssign,
     Index,
@@ -285,9 +285,9 @@ impl SpatialGrid {
     /// Appends `entity` to `pos`'s entity list after its cell and total counts were already incremented
     /// (e.g. via [`Self::try_claim_empty_plant_tile`]).
     pub fn push_claimed_entity(&self, claim_token: ClaimToken<'_>, entity: Entity) {
-        let (pos, kind) = claim_token.consume();
-        let i = self.idx(pos);
-        self.entities[i].write().push((entity, kind));
+        let claim_token = ManuallyDrop::new(claim_token);
+        let i = self.idx(claim_token.pos);
+        self.entities[i].write().push((entity, claim_token.kind));
     }
 
     pub fn remove(&self, pos: GridPosition, entity: Entity, kind: EntityKind) -> bool {
@@ -420,14 +420,5 @@ pub struct ClaimToken<'sp> {
 impl Drop for ClaimToken<'_> {
     fn drop(&mut self) {
         panic!("The slot was not claimed")
-    }
-}
-
-impl ClaimToken<'_> {
-    fn consume(self) -> (GridPosition, EntityKind) {
-        let pos = self.pos;
-        let kind = self.kind;
-        mem::forget(self);
-        (pos, kind)
     }
 }
