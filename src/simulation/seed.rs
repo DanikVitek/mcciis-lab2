@@ -1,15 +1,11 @@
 use bevy::prelude::*;
-use bon::bon;
 use itertools::Itertools;
 use rand::RngExt;
 use rand::distr::Distribution;
 use rand::seq::WeightError;
-use serde::{
-    Deserialize,
-    Serialize,
-};
 
 use super::organism::{
+    Energy,
     EntityKind,
     FoodValues,
     Herbivore,
@@ -19,86 +15,23 @@ use super::organism::{
     ValueAsFood,
 };
 use super::spatial::SpatialGrid;
+pub use super::{
+    DistributionConfig,
+    DistributionError,
+};
 use super::{
     ResetSimulation,
     SimulationTickCount,
     WorldSeeded,
+    spawn_herbivore,
+    spawn_plant,
+    spawn_predator,
 };
 use crate::grid::{
     Facing,
     GridPosition,
     GridSize,
 };
-use crate::name;
-use crate::simulation::brain::{
-    SENSORS_HERBIVORE,
-    SENSORS_PREDATOR,
-};
-use crate::simulation::organism::Energy;
-
-#[derive(Debug, Clone, Copy, PartialEq, Resource, Serialize, Deserialize)]
-#[serde(rename = "distribution_config", rename_all = "snake_case")]
-pub struct DistributionConfig {
-    plants_fraction: f32,
-    herbivores_fraction: f32,
-    predators_fraction: f32,
-}
-
-impl Default for DistributionConfig {
-    fn default() -> Self {
-        Self {
-            plants_fraction: 0.1,
-            herbivores_fraction: 0.1,
-            predators_fraction: 0.1,
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum DistributionError {
-    #[error("negative distribution fraction")]
-    NegativeFraction,
-    #[error("sum of the distribution fractions is greater than one")]
-    SumGtOne,
-}
-
-#[bon]
-impl DistributionConfig {
-    #[builder(const)]
-    pub const fn new(
-        #[builder(default = 0.0)] plants_fraction: f32,
-        #[builder(default = 0.0)] herbivores_fraction: f32,
-        #[builder(default = 0.0)] predators_fraction: f32,
-    ) -> Result<Self, DistributionError> {
-        if plants_fraction < 0.0 || herbivores_fraction < 0.0 || predators_fraction < 0.0 {
-            return Err(DistributionError::NegativeFraction);
-        }
-
-        if plants_fraction + herbivores_fraction + predators_fraction > 1.0 {
-            return Err(DistributionError::SumGtOne);
-        }
-
-        Ok(Self {
-            plants_fraction,
-            herbivores_fraction,
-            predators_fraction,
-        })
-    }
-}
-
-impl DistributionConfig {
-    pub const fn plants_fraction(&self) -> f32 {
-        self.plants_fraction
-    }
-
-    pub const fn herbivores_fraction(&self) -> f32 {
-        self.herbivores_fraction
-    }
-
-    pub const fn predators_fraction(&self) -> f32 {
-        self.predators_fraction
-    }
-}
 
 pub(super) fn seed_world(
     mut commands: Commands,
@@ -195,14 +128,7 @@ fn populate_grid(
             }
             PLANT => {
                 let pos = GridPosition::new(x, y);
-
-                let entity = {
-                    let mut entity_commands =
-                        commands.spawn((Plant, pos, ValueAsFood(food_values.plant)));
-                    let entity = entity_commands.id();
-                    entity_commands.insert(name!(format!("Plant {entity}")));
-                    entity
-                };
+                let entity = spawn_plant(commands, pos, ValueAsFood(food_values.plant));
 
                 spatial_grid.insert(pos, entity, EntityKind::Plant);
                 plants_total -= 1;
@@ -215,21 +141,15 @@ fn populate_grid(
             idx @ (HERBIVORE | PREDATOR) => {
                 let pos = GridPosition::new(x, y);
                 let dir = rng.random::<Facing>();
+                let energy = Energy::from(initial_energy);
                 match idx {
                     HERBIVORE => {
-                        let entity = {
-                            let mut entity_commands = commands.spawn((
-                                Herbivore,
-                                pos,
-                                dir,
-                                Energy::from(initial_energy),
-                                ValueAsFood(food_values.herbivore),
-                                SENSORS_HERBIVORE.to_owned(),
-                            ));
-                            let entity = entity_commands.id();
-                            entity_commands.insert(name!(format!("Herbivore {entity}")));
-                            entity
-                        };
+                        let entity = spawn_herbivore(commands)
+                            .pos(pos)
+                            .facing(dir)
+                            .energy(energy)
+                            .value_as_food(food_values.herbivore)
+                            .call();
                         spatial_grid.insert(pos, entity, EntityKind::Herbivore);
                         herbivores_total -= 1;
                         match dist.update_weights(&[(2, &herbivores_total)]) {
@@ -239,18 +159,11 @@ fn populate_grid(
                         }
                     }
                     PREDATOR => {
-                        let entity = {
-                            let mut entity_commands = commands.spawn((
-                                Predator,
-                                pos,
-                                dir,
-                                Energy::from(initial_energy),
-                                SENSORS_PREDATOR.to_owned(),
-                            ));
-                            let entity = entity_commands.id();
-                            entity_commands.insert(name!(format!("Predator {entity}")));
-                            entity
-                        };
+                        let entity = spawn_predator(commands)
+                            .pos(pos)
+                            .facing(dir)
+                            .energy(energy)
+                            .call();
                         spatial_grid.insert(pos, entity, EntityKind::Predator);
                         predators_total -= 1;
                         match dist.update_weights(&[(3, &predators_total)]) {

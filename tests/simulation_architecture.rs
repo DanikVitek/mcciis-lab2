@@ -32,8 +32,13 @@ use life_sim::simulation::organism::{
     Predator,
     ValueAsFood,
 };
+use life_sim::simulation::reproduction::{
+    DistributedMutation,
+    ReproductionThreshold,
+};
 use life_sim::simulation::spatial::{
     CellCounts,
+    CharacterCounts,
     SpatialGrid,
 };
 use life_sim::simulation::{
@@ -855,4 +860,202 @@ fn plants_bud_locally_up_to_capacity_and_stay_extinct_at_zero() {
         app.world_mut().run_schedule(SimulationTick);
     }
     assert_eq!(app.world().resource::<SpatialGrid>().plant_count(), 0);
+}
+
+#[test]
+fn history_recorder_tracks_max_age_reproductions_and_generations() {
+    let size = GridSize::new(10, 10);
+    // Keep `plants_fraction(0.20)` (`max_plants = 20`) with `plant_growth_rate(2.0)` so that
+    // while `current_plants <= 10`, `bud_prob = (2.0 * (1.0 - current / 20.0)).clamp(0.0, 1.0) == 1.0`
+    // (100% deterministic budding every tick).
+    let dist = DistributionConfig::builder()
+        .plants_fraction(0.20)
+        .herbivores_fraction(0.0)
+        .predators_fraction(0.0)
+        .build()
+        .unwrap();
+
+    let mut app = App::new();
+    app.add_plugins((
+        SimulationPlugin::builder()
+            .grid_size(size)
+            .distribution(dist)
+            .initial_energy(10.0)
+            .max_energy(100.0)
+            .action_costs(ActionCosts {
+                turn: Energy(2.0),
+                go_forward: Energy(2.0),
+                consume: Energy(2.0),
+            })
+            .build(),
+        ReproductionPlugin::builder()
+            .plant_growth_rate(2.0)
+            .reproduction_threshold(ReproductionThreshold::Absolute(Energy(10.0)))
+            .mutation_strategy(DistributedMutation::new(0.0))
+            .build(),
+        HistoryRecorderPlugin::default(),
+    ));
+    app.update();
+
+    // Replace the random initial plants with a deterministic setup:
+    // - 1 founder `Plant` at `(1, 1)`
+    // - 1 `Herbivore` at `(5, 5)` with `TurnLeft` brain and `Energy(16.0)`
+    // - 1 `Predator` at `(8, 8)` with `TurnLeft` brain and `Energy(12.0)`
+    let turn_brain = deterministic_action_brain(Action::TurnLeft);
+    {
+        let existing_plants: Vec<(Entity, GridPosition)> = {
+            let world = app.world_mut();
+            world
+                .query_filtered::<(Entity, &GridPosition), With<Plant>>()
+                .iter(world)
+                .map(|(e, p)| (e, *p))
+                .collect()
+        };
+        let world = app.world_mut();
+        for (entity, pos) in existing_plants {
+            world
+                .resource::<SpatialGrid>()
+                .remove(pos, entity, EntityKind::Plant);
+            world.despawn(entity);
+        }
+
+        let plant_pos = GridPosition::new(1, 1);
+        let plant = world
+            .spawn((Plant, plant_pos, ValueAsFood(Energy(1.0))))
+            .id();
+        world
+            .resource::<SpatialGrid>()
+            .insert(plant_pos, plant, EntityKind::Plant);
+
+        let herb_pos = GridPosition::new(5, 5);
+        let herb = world
+            .spawn((
+                Herbivore,
+                herb_pos,
+                Facing::North,
+                turn_brain.clone(),
+                Generation::default(),
+                Energy(16.0),
+                ValueAsFood(Energy(2.0)),
+                SENSORS_HERBIVORE.to_owned(),
+            ))
+            .id();
+        world
+            .resource::<SpatialGrid>()
+            .insert(herb_pos, herb, EntityKind::Herbivore);
+
+        let pred_pos = GridPosition::new(8, 8);
+        let pred = world
+            .spawn((
+                Predator,
+                pred_pos,
+                Facing::North,
+                turn_brain,
+                Generation::default(),
+                Energy(12.0),
+                SENSORS_PREDATOR.to_owned(),
+            ))
+            .id();
+        world
+            .resource::<SpatialGrid>()
+            .insert(pred_pos, pred, EntityKind::Predator);
+
+        world.trigger(WorldSeeded);
+        world.flush();
+    }
+
+    // Baseline at tick 0:
+    {
+        let history = app.world().resource::<SimulationHistory>();
+        assert_eq!(history.max_age(), CharacterCounts::default());
+        assert_eq!(history.reproductions(), CellCounts::default());
+        let first_gen = history.first_generation().unwrap();
+        assert_eq!(first_gen.oldest_alive, Some(1));
+        assert_eq!(first_gen.youngest, Some(1));
+        assert_eq!(first_gen.counts, vec![(1, 2)]);
+    }
+
+    // Tick 1:
+    // - Herbivore turns (`16.0 -> 14.0`, age 1) and reproduces (`14.0 -> 7.0` each for parent gen 1 & child gen 2).
+    // - Predator turns (`12.0 -> 10.0`, age 1) and reproduces (`10.0 -> 5.0` each for parent gen 1 & child gen 2).
+    // - Plant buds 1 offspring (`bud_prob == 1.0`).
+    app.world_mut().run_schedule(SimulationTick);
+    {
+        let history = app.world().resource::<SimulationHistory>();
+        assert_eq!(
+            history.max_age(),
+            CharacterCounts {
+                herbivores: 1,
+                predators: 1,
+            }
+        );
+        assert_eq!(
+            history.reproductions(),
+            CellCounts {
+                plants: 1,
+                herbivores: 1,
+                predators: 1,
+            }
+        );
+        let last_gen = history.last_generation().unwrap();
+        assert_eq!(last_gen.oldest_alive, Some(1));
+        assert_eq!(last_gen.youngest, Some(2));
+        assert_eq!(last_gen.counts, vec![(1, 2), (2, 2)]);
+    }
+
+    // Ticks 2..=4:
+    // - Predators have `5.0` energy after tick 1; losing `2.0` per tick -> `3.0` (tick 2, max age 2),
+    //   `1.0` (tick 3, max age 3), `0.0` (tick 4 -> both predators starve at ages 3 and 2).
+    // - Herbivores have `7.0` energy after tick 1; losing `2.0` per tick -> `5.0` (tick 2, max age 2),
+    //   `3.0` (tick 3, max age 3), `1.0` (tick 4, max age 4).
+    for _ in 2..=4 {
+        app.world_mut().run_schedule(SimulationTick);
+    }
+    {
+        let history = app.world().resource::<SimulationHistory>();
+        assert_eq!(
+            history.max_age(),
+            CharacterCounts {
+                herbivores: 4,
+                predators: 3,
+            }
+        );
+        assert_eq!(history.reproductions().herbivores, 1);
+        assert_eq!(history.reproductions().predators, 1);
+        assert!(history.reproductions().plants >= 4);
+        // Only the 2 herbivores (1 of gen 1, 1 of gen 2) remain alive at tick 4.
+        let last_gen = history.last_generation().unwrap();
+        assert_eq!(last_gen.oldest_alive, Some(1));
+        assert_eq!(last_gen.youngest, Some(2));
+        assert_eq!(last_gen.counts, vec![(1, 1), (2, 1)]);
+    }
+
+    // Tick 5:
+    // - Both herbivores turn (`1.0 - 2.0 -> 0.0`) and starve at ages 4 and 3.
+    // - `max_age` remains `{ herbivores: 4, predators: 3 }` even after all characters are extinct.
+    app.world_mut().run_schedule(SimulationTick);
+    {
+        let history = app.world().resource::<SimulationHistory>();
+        assert_eq!(
+            history.max_age(),
+            CharacterCounts {
+                herbivores: 4,
+                predators: 3,
+            }
+        );
+        let last_gen = history.last_generation().unwrap();
+        assert_eq!(last_gen.oldest_alive, None);
+        assert_eq!(last_gen.youngest, None);
+        assert!(last_gen.counts.is_empty());
+    }
+
+    // Resetting clears `max_age` and `reproductions` back to zero.
+    app.world_mut().trigger(ResetSimulation);
+    app.world_mut().flush();
+
+    {
+        let history = app.world().resource::<SimulationHistory>();
+        assert_eq!(history.max_age(), CharacterCounts::default());
+        assert_eq!(history.reproductions(), CellCounts::default());
+    }
 }

@@ -247,13 +247,24 @@ pub enum Action {
     Consume,
 }
 
+/// Target food entity staged during `decide_actions` for consumption in `apply_actions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConsumeTarget {
+    pub entity: Entity,
+    pub pos: GridPosition,
+    /// `true` if this consumer was the first to target `entity` during this tick (`ConsumerCount` `0 -> 1`).
+    pub first_consumer: bool,
+}
+
 /// Per-tick action staged during parallel `decide_actions` for parallel resolution in `apply_actions`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Component)]
 pub enum PreparedAction {
     #[default]
     None,
+    TurnLeft,
+    TurnRight,
     MoveTo(GridPosition),
-    Consume(Option<Entity>),
+    Consume(Option<ConsumeTarget>),
 }
 
 impl Action {

@@ -1,8 +1,14 @@
 use core::any::Any;
 use core::fmt;
+use core::str::FromStr;
+use core::sync::atomic::{
+    AtomicUsize,
+    Ordering,
+};
 
 use bevy::math::I16Vec2;
 use bevy::prelude::*;
+use parking_lot::Mutex;
 use rand::RngExt;
 use rand::seq::{
     IndexedRandom,
@@ -17,10 +23,9 @@ use super::brain::{
     Brain,
     INPUTS,
     OUTPUTS,
-    SENSORS_HERBIVORE,
-    SENSORS_PREDATOR,
 };
 use super::organism::{
+    Age,
     Energy,
     EntityKind,
     FoodValues,
@@ -28,21 +33,25 @@ use super::organism::{
     Herbivore,
     MaxEnergy,
     Plant,
-    Predator,
     ValueAsFood,
 };
-use super::seed::DistributionConfig;
 use super::spatial::SpatialGrid;
 use super::{
+    CharacterDied,
+    DeathCause,
+    DistributionConfig,
+    OrganismReproduced,
     SimulationSystems,
     SimulationTick,
+    spawn_herbivore,
+    spawn_plant,
+    spawn_predator,
 };
 use crate::grid::{
     Facing,
     GridPosition,
     GridSize,
 };
-use crate::name;
 
 const MOORE_OFFSETS: [[i16; 2]; 8] = [
     [-1, -1],
@@ -250,6 +259,27 @@ impl From<f32> for PlantGrowthRate {
     }
 }
 
+impl fmt::Display for PlantGrowthRate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for PlantGrowthRate {
+    type Err = <f32 as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        f32::from_str(s).map(Self)
+    }
+}
+
+impl PlantGrowthRate {
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        0.0 <= self.0 && self.0 <= 1.0
+    }
+}
+
 /// Registers the parallel character and plant reproduction systems in [`SimulationSystems::Reproduce`]
 /// within [`SimulationTick`] without inserting configuration [`Resource`]s upfront.
 ///
@@ -264,10 +294,14 @@ impl Plugin for DeferredReproductionPlugin {
             app.add_plugins(TaskPoolPlugin::default());
         }
 
-        app.add_systems(
-            SimulationTick,
-            (reproduce_characters, reproduce_plants).in_set(SimulationSystems::Reproduce),
-        );
+        app.add_message::<OrganismReproduced>()
+            .add_message::<CharacterDied>()
+            .add_systems(
+                SimulationTick,
+                (reproduce_characters, reproduce_plants)
+                    .chain_weak()
+                    .in_set(SimulationSystems::Reproduce),
+            );
     }
 }
 
@@ -294,6 +328,29 @@ impl Plugin for ReproductionPlugin {
     }
 }
 
+#[derive(Default)]
+struct SharedCharacterReproTelemetry {
+    reproduced: Vec<OrganismReproduced>,
+    died: Vec<CharacterDied>,
+}
+
+struct ThreadCharacterReproBatch<'a> {
+    reproduced: Vec<OrganismReproduced>,
+    died: Vec<CharacterDied>,
+    shared: &'a Mutex<SharedCharacterReproTelemetry>,
+}
+
+impl Drop for ThreadCharacterReproBatch<'_> {
+    fn drop(&mut self) {
+        if self.reproduced.is_empty() && self.died.is_empty() {
+            return;
+        }
+        let mut shared = self.shared.lock();
+        shared.reproduced.append(&mut self.reproduced);
+        shared.died.append(&mut self.died);
+    }
+}
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn reproduce_characters(
     par_commands: ParallelCommands,
@@ -303,6 +360,8 @@ pub(super) fn reproduce_characters(
     max_energy: Res<MaxEnergy>,
     mutation_strategy: Res<MutationStrategy>,
     food_values: Option<Res<FoodValues>>,
+    mut reproduced_writer: MessageWriter<OrganismReproduced>,
+    mut died_writer: MessageWriter<CharacterDied>,
     mut query: Query<(
         Entity,
         &mut Energy,
@@ -310,19 +369,25 @@ pub(super) fn reproduce_characters(
         &GridPosition,
         &Facing,
         &Generation,
+        &Age,
         Has<Herbivore>,
     )>,
 ) {
-    let herbivore_food = ValueAsFood(
-        food_values
-            .as_deref()
-            .copied()
-            .unwrap_or_default()
-            .herbivore,
-    );
+    let herbivore_value_as_food = food_values
+        .as_deref()
+        .copied()
+        .unwrap_or_default()
+        .herbivore;
+    let shared_telemetry: Mutex<SharedCharacterReproTelemetry> =
+        Mutex::new(SharedCharacterReproTelemetry::default());
 
-    query.par_iter_mut().for_each(
-        |(entity, mut energy, brain, pos, facing, generation, is_herbivore)| {
+    query.par_iter_mut().for_each_init(
+        || ThreadCharacterReproBatch {
+            reproduced: Vec::new(),
+            died: Vec::new(),
+            shared: &shared_telemetry,
+        },
+        |batch, (entity, mut energy, brain, pos, facing, generation, age, is_herbivore)| {
             if !energy.is_enough_to_reproduce(*repro_threshold, *max_energy) {
                 return;
             }
@@ -343,6 +408,19 @@ pub(super) fn reproduce_characters(
                 EntityKind::Predator
             };
 
+            batch.reproduced.push(OrganismReproduced {
+                kind: entity_kind,
+                child_generation: Some(child_gen),
+            });
+            if parent_deceased {
+                batch.died.push(CharacterDied {
+                    kind: entity_kind,
+                    age: *age,
+                    generation: *generation,
+                    cause: DeathCause::Starved,
+                });
+            }
+
             par_commands.command_scope(|mut commands| {
                 if parent_deceased {
                     commands.entity(entity).despawn();
@@ -350,39 +428,38 @@ pub(super) fn reproduce_characters(
                 }
 
                 let child = if is_herbivore {
-                    let mut entity_commands = commands.spawn((
-                        Herbivore,
-                        child_pos,
-                        *facing,
-                        child_brain,
-                        child_gen,
-                        child_energy,
-                        herbivore_food,
-                        SENSORS_HERBIVORE.to_owned(),
-                    ));
-                    let entity = entity_commands.id();
-                    entity_commands.insert(name!(format!("Herbivore {entity}")));
-                    entity
+                    spawn_herbivore(&mut commands)
+                        .pos(child_pos)
+                        .facing(*facing)
+                        .brain(child_brain)
+                        .generation(child_gen)
+                        .energy(child_energy)
+                        .value_as_food(herbivore_value_as_food)
+                        .call()
                 } else {
-                    let mut entity_commands = commands.spawn((
-                        Predator,
-                        child_pos,
-                        *facing,
-                        child_brain,
-                        child_gen,
-                        child_energy,
-                        SENSORS_PREDATOR.to_owned(),
-                    ));
-                    let entity = entity_commands.id();
-                    entity_commands.insert(name!(format!("Predator {entity}")));
-                    entity
+                    spawn_predator(&mut commands)
+                        .pos(child_pos)
+                        .facing(*facing)
+                        .energy(child_energy)
+                        .brain(child_brain)
+                        .generation(child_gen)
+                        .call()
                 };
                 spatial_grid.insert(child_pos, child, entity_kind);
             });
         },
     );
+
+    let telemetry = shared_telemetry.into_inner();
+    if !telemetry.reproduced.is_empty() {
+        reproduced_writer.write_batch(telemetry.reproduced);
+    }
+    if !telemetry.died.is_empty() {
+        died_writer.write_batch(telemetry.died);
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn reproduce_plants(
     par_commands: ParallelCommands,
     spatial_grid: Res<SpatialGrid>,
@@ -390,6 +467,7 @@ pub(super) fn reproduce_plants(
     distribution: Option<Res<DistributionConfig>>,
     plant_growth_rate: Option<Res<PlantGrowthRate>>,
     food_values: Option<Res<FoodValues>>,
+    mut reproduced_writer: MessageWriter<OrganismReproduced>,
     plants: Query<&GridPosition, With<Plant>>,
 ) {
     let Some(distribution) = distribution else {
@@ -416,6 +494,7 @@ pub(super) fn reproduce_plants(
     }
 
     let plant_food = ValueAsFood(food_values.as_deref().copied().unwrap_or_default().plant);
+    let budded_plants = AtomicUsize::new(0);
 
     plants.par_iter().for_each(|pos| {
         let mut rng = rand::rng();
@@ -431,17 +510,24 @@ pub(super) fn reproduce_plants(
             if let Some(claim_token) =
                 spatial_grid.try_claim_empty_tile(candidate, EntityKind::Plant, max_plants)
             {
+                budded_plants.fetch_add(1, Ordering::Relaxed);
                 par_commands.command_scope(|mut commands| {
-                    let child = {
-                        let mut entity_commands = commands.spawn((Plant, candidate, plant_food));
-                        let entity = entity_commands.id();
-                        entity_commands.insert(name!(format!("Plant {entity}")));
-                        entity
-                    };
+                    let child = spawn_plant(&mut commands, candidate, plant_food);
                     spatial_grid.push_claimed_entity(claim_token, child);
                 });
                 break;
             }
         }
     });
+
+    let budded = budded_plants.into_inner();
+    if budded > 0 {
+        reproduced_writer.write_batch(core::iter::repeat_n(
+            OrganismReproduced {
+                kind: EntityKind::Plant,
+                child_generation: None,
+            },
+            budded,
+        ));
+    }
 }

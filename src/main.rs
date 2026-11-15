@@ -1,4 +1,7 @@
-use core::iter;
+use core::iter::{
+    self,
+    FusedIterator,
+};
 use core::num::NonZeroU64;
 use std::fs::{
     self,
@@ -32,10 +35,17 @@ use life_sim::presentation::ui::config::{
     SimConfig,
 };
 use life_sim::simulation::organism::{
+    ActionCosts,
+    Energy,
+    FoodValues,
     InitialEnergy,
     MaxEnergy,
 };
-use life_sim::simulation::spatial::SpatialGrid;
+use life_sim::simulation::spatial::{
+    CellCounts,
+    CharacterCounts,
+    SpatialGrid,
+};
 use life_sim::simulation::{
     DeferredReproductionPlugin,
     DeferredSimulationPlugin,
@@ -43,7 +53,9 @@ use life_sim::simulation::{
     DistributionConfig,
     HistoryRecorderPlugin,
     MutationStrategy,
+    PlantGrowthRate,
     ReproductionPlugin,
+    ReproductionThreshold,
     SimulationHistory,
     SimulationPlugin,
     SimulationTick,
@@ -63,7 +75,7 @@ enum CliCommand {
     /// Run the interactive 2D visual simulation (default when no subcommand is given).
     Visual(VisualArgs),
     /// Run headless batch experiments across a parameter grid and export CSVs for the lab protocol.
-    Headless(HeadlessArgs),
+    Headless(Box<HeadlessArgs>),
 }
 
 #[derive(Debug, Clone, Default, Args)]
@@ -118,6 +130,7 @@ struct HeadlessArgs {
         short = 'o',
         long = "distributed-offsets",
         value_delimiter = ',',
+        num_args = 0..,
         default_values_t = [0.1_f32, 0.25_f32, 0.5_f32, 1.0_f32]
     )]
     distributed_offsets: Vec<f32>,
@@ -134,6 +147,10 @@ struct HeadlessArgs {
     #[arg(long, value_delimiter = ',', default_values_t = [0.1_f32, 0.2, 0.3])]
     predators: Vec<f32>,
 
+    /// Comma-separated list of logistic plant (algae) growth rates to sweep [0.0..=1.0].
+    #[arg(long, value_delimiter = ',', default_values_t = [PlantGrowthRate::default()])]
+    plant_growth_rate: Vec<PlantGrowthRate>,
+
     /// Comma-separated list of initial organism energies to sweep.
     #[arg(long, value_delimiter = ',', default_values_t = [5_u8, 8_u8].map(InitialEnergy::from))]
     initial_energy: Vec<InitialEnergy>,
@@ -141,6 +158,39 @@ struct HeadlessArgs {
     /// Comma-separated list of maximum organism energy capacities to sweep.
     #[arg(long, value_delimiter = ',', default_values_t = [10_u8, 20_u8].map(MaxEnergy::from))]
     max_energy: Vec<MaxEnergy>,
+
+    /// Comma-separated list of relative reproduction energy thresholds (fractions of `max_energy`) to sweep [0.0..=1.0].
+    #[arg(
+        long,
+        value_delimiter = ',',
+        num_args = 0..,
+        default_values_t = [0.9_f32]
+    )]
+    reproduction_threshold_relative: Vec<f32>,
+
+    /// Comma-separated list of absolute reproduction energy thresholds to sweep (0.0 < threshold <= max_energy].
+    #[arg(long, value_delimiter = ',', num_args = 0..)]
+    reproduction_threshold_absolute: Vec<Energy>,
+
+    /// Comma-separated list of energy costs for turning (`TurnLeft` / `TurnRight`) to sweep.
+    #[arg(long, value_delimiter = ',', default_values_t = [ActionCosts::default().turn])]
+    turn_cost: Vec<Energy>,
+
+    /// Comma-separated list of energy costs for moving forward (`GoForward`) to sweep.
+    #[arg(long, value_delimiter = ',', default_values_t = [ActionCosts::default().go_forward])]
+    go_forward_cost: Vec<Energy>,
+
+    /// Comma-separated list of energy costs for consuming (`Consume`) to sweep.
+    #[arg(long, value_delimiter = ',', default_values_t = [ActionCosts::default().consume])]
+    consume_cost: Vec<Energy>,
+
+    /// Comma-separated list of nutritional energy values gained from consuming a plant (algae) to sweep.
+    #[arg(long, value_delimiter = ',', default_values_t = [FoodValues::default().plant])]
+    plant_food_value: Vec<Energy>,
+
+    /// Comma-separated list of nutritional energy values gained from consuming a herbivore to sweep.
+    #[arg(long, value_delimiter = ',', default_values_t = [FoodValues::default().herbivore])]
+    herbivore_food_value: Vec<Energy>,
 
     /// Number of independent repetitions to execute per parameter configuration.
     #[arg(short = 'r', long, default_value_t = 1)]
@@ -167,12 +217,16 @@ struct HeadlessArgs {
     output_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct GridPoint {
     mutation_strategy: MutationStrategy,
     distribution: DistributionConfig,
+    plant_growth_rate: PlantGrowthRate,
     initial_energy: InitialEnergy,
     max_energy: MaxEnergy,
+    reproduction_threshold: ReproductionThreshold,
+    action_costs: ActionCosts,
+    food_values: FoodValues,
 }
 
 struct RunSummary {
@@ -184,10 +238,10 @@ struct RunSummary {
     max_ticks: u64,
     total_ticks: u64,
     extinct: bool,
-    final_herbivores: u32,
-    final_predators: u32,
-    peak_herbivores: u32,
-    peak_predators: u32,
+    final_counts: CellCounts<u32>,
+    peak_counts: CellCounts<u32>,
+    max_age: CharacterCounts<u32>,
+    reproductions: CellCounts<u64>,
     max_generation_reached: u32,
     final_oldest_generation: Option<u32>,
     final_youngest_generation: Option<u32>,
@@ -206,7 +260,7 @@ fn main() -> io::Result<()> {
             run_visual(args);
             Ok(())
         }
-        CliCommand::Headless(args) => run_headless_sweep(args),
+        CliCommand::Headless(args) => run_headless_sweep(*args),
     }
 }
 
@@ -315,99 +369,151 @@ struct Grid<'a> {
     plants_fraction: &'a [f32],
     herbivores_fraction: &'a [f32],
     predators_fraction: &'a [f32],
+    plant_growth_rate: &'a [PlantGrowthRate],
     initial_energy: &'a [InitialEnergy],
     max_energy: &'a [MaxEnergy],
+    reproduction_threshold_relative: &'a [f32],
+    reproduction_threshold_absolute: &'a [Energy],
+    turn_cost: &'a [Energy],
+    go_forward_cost: &'a [Energy],
+    consume_cost: &'a [Energy],
+    plant_food_value: &'a [Energy],
+    herbivore_food_value: &'a [Energy],
 }
 
 impl Grid<'_> {
+    fn mutation_strategies(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = MutationStrategy> + FusedIterator + Clone + use<'_> {
+        iter::chain(
+            self.single_neuron_mutation
+                .then_some(MutationStrategy::SingleNeuron(SingleNeuronMutation)),
+            self.distributed_mutation
+                .iter()
+                .copied()
+                .map(|offset| MutationStrategy::Distributed(DistributedMutation { offset })),
+        )
+    }
+
+    fn distributions(&self) -> impl Iterator<Item = DistributionConfig> + Clone + use<'_> {
+        iproduct!(
+            self.plants_fraction.iter().copied(),
+            self.herbivores_fraction.iter().copied(),
+            self.predators_fraction.iter().copied(),
+        )
+        .filter_map(|(pl, h, pr)| {
+            DistributionConfig::builder()
+                .plants_fraction(pl)
+                .herbivores_fraction(h)
+                .predators_fraction(pr)
+                .build()
+                .ok()
+        })
+    }
+
+    fn plant_growth_rates(&self) -> impl Iterator<Item = PlantGrowthRate> + Clone + use<'_> {
+        self.plant_growth_rate
+            .iter()
+            .copied()
+            .filter(|rate| rate.is_valid())
+    }
+
+    fn reproduction_thresholds(
+        &self,
+    ) -> impl Iterator<Item = ReproductionThreshold> + Clone + use<'_> {
+        iter::chain(
+            self.reproduction_threshold_relative
+                .iter()
+                .copied()
+                .map(ReproductionThreshold::Relative),
+            self.reproduction_threshold_absolute
+                .iter()
+                .copied()
+                .map(ReproductionThreshold::Absolute),
+        )
+    }
+
+    fn energy_and_thresholds(
+        &self,
+    ) -> impl Iterator<Item = (InitialEnergy, MaxEnergy, ReproductionThreshold)> + Clone + use<'_>
+    {
+        iproduct!(
+            self.initial_energy.iter().copied(),
+            self.max_energy.iter().copied(),
+            self.reproduction_thresholds(),
+        )
+        .filter(|&(InitialEnergy(initial), max_energy, threshold)| {
+            initial.0 > 0.0
+                && max_energy.0.0 > 0.0
+                && initial <= max_energy.0
+                && threshold.is_valid_for(max_energy)
+        })
+    }
+
+    fn action_costs(&self) -> impl Iterator<Item = ActionCosts> + Clone + use<'_> {
+        iproduct!(
+            self.turn_cost.iter().copied(),
+            self.go_forward_cost.iter().copied(),
+            self.consume_cost.iter().copied(),
+        )
+        .map(|(turn, go_forward, consume)| ActionCosts {
+            turn,
+            go_forward,
+            consume,
+        })
+        .filter(|costs| costs.is_valid())
+    }
+
+    fn food_values(&self) -> impl Iterator<Item = FoodValues> + Clone + use<'_> {
+        iproduct!(
+            self.plant_food_value.iter().copied(),
+            self.herbivore_food_value.iter().copied(),
+        )
+        .map(|(plant, herbivore)| FoodValues { plant, herbivore })
+        .filter(|food| food.is_valid())
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        (!self.single_neuron_mutation && self.distributed_mutation.is_empty())
-            || self.plants_fraction.is_empty()
-            || self.herbivores_fraction.is_empty()
-            || self.predators_fraction.is_empty()
-            || self.initial_energy.is_empty()
-            || self.max_energy.is_empty()
-            || iproduct!(
-                self.initial_energy.iter().copied(),
-                self.max_energy.iter().copied()
-            )
-            .all(|(InitialEnergy(initial), MaxEnergy(max))| initial > max)
-            || iproduct!(
-                self.plants_fraction.iter().copied(),
-                self.herbivores_fraction.iter().copied(),
-                self.predators_fraction.iter().copied(),
-            )
-            .all(|(pl, h, pr)| {
-                DistributionConfig::builder()
-                    .plants_fraction(pl)
-                    .herbivores_fraction(h)
-                    .predators_fraction(pr)
-                    .build()
-                    .is_err()
-            })
+        self.iter().next().is_none()
     }
 
     #[must_use]
     pub fn len(&self) -> u64 {
-        (u64::from(self.single_neuron_mutation) + self.distributed_mutation.len() as u64)
-            * iproduct!(
-                self.plants_fraction.iter().copied(),
-                self.herbivores_fraction.iter().copied(),
-                self.predators_fraction.iter().copied(),
-            )
-            .filter_map(|(pl, h, pr)| {
-                DistributionConfig::builder()
-                    .plants_fraction(pl)
-                    .herbivores_fraction(h)
-                    .predators_fraction(pr)
-                    .build()
-                    .ok()
-            })
-            .fold(0_u64, |acc, _| acc + 1)
-            * iproduct!(
-                self.initial_energy.iter().copied(),
-                self.max_energy.iter().copied(),
-            )
-            .filter(|&(InitialEnergy(initial), MaxEnergy(max))| initial <= max)
-            .fold(0_u64, |acc, _| acc + 1)
+        (self.mutation_strategies().count() as u64)
+            * (self.distributions().count() as u64)
+            * (self.plant_growth_rates().count() as u64)
+            * (self.energy_and_thresholds().count() as u64)
+            * (self.action_costs().count() as u64)
+            * (self.food_values().count() as u64)
     }
 
     fn iter(&self) -> impl Iterator<Item = GridPoint> + use<'_> {
         iproduct!(
-            iter::chain(
-                self.single_neuron_mutation
-                    .then_some(MutationStrategy::SingleNeuron(SingleNeuronMutation)),
-                self.distributed_mutation
-                    .iter()
-                    .copied()
-                    .map(|offset| MutationStrategy::Distributed(DistributedMutation { offset }))
-            ),
-            iproduct!(
-                self.plants_fraction.iter().copied(),
-                self.herbivores_fraction.iter().copied(),
-                self.predators_fraction.iter().copied(),
-            )
-            .filter_map(|(pl, h, pr)| {
-                DistributionConfig::builder()
-                    .plants_fraction(pl)
-                    .herbivores_fraction(h)
-                    .predators_fraction(pr)
-                    .build()
-                    .ok()
-            }),
-            iproduct!(
-                self.initial_energy.iter().copied(),
-                self.max_energy.iter().copied(),
-            )
-            .filter(|&(InitialEnergy(initial), MaxEnergy(max))| initial <= max)
+            self.mutation_strategies(),
+            self.distributions(),
+            self.plant_growth_rates(),
+            self.energy_and_thresholds(),
+            self.action_costs(),
+            self.food_values(),
         )
         .map(
-            |(mutation_strategy, distribution, (initial_energy, max_energy))| GridPoint {
+            |(
                 mutation_strategy,
                 distribution,
+                plant_growth_rate,
+                (initial_energy, max_energy, reproduction_threshold),
+                action_costs,
+                food_values,
+            )| GridPoint {
+                mutation_strategy,
+                distribution,
+                plant_growth_rate,
                 initial_energy,
                 max_energy,
+                reproduction_threshold,
+                action_costs,
+                food_values,
             },
         )
     }
@@ -421,8 +527,16 @@ impl<'a> From<&'a HeadlessArgs> for Grid<'a> {
             plants_fraction: &args.plants,
             herbivores_fraction: &args.herbivores,
             predators_fraction: &args.predators,
+            plant_growth_rate: &args.plant_growth_rate,
             initial_energy: &args.initial_energy,
             max_energy: &args.max_energy,
+            reproduction_threshold_relative: &args.reproduction_threshold_relative,
+            reproduction_threshold_absolute: &args.reproduction_threshold_absolute,
+            turn_cost: &args.turn_cost,
+            go_forward_cost: &args.go_forward_cost,
+            consume_cost: &args.consume_cost,
+            plant_food_value: &args.plant_food_value,
+            herbivore_food_value: &args.herbivore_food_value,
         }
     }
 }
@@ -431,7 +545,7 @@ fn run_headless_sweep(args: HeadlessArgs) -> io::Result<()> {
     let grid = Grid::from(&args);
     if grid.is_empty() {
         eprintln!(
-            "Parameter grid is empty. Check mutation strategies, distribution fractions, and energy ranges (initial_energy <= max_energy)."
+            "Parameter grid is empty. Check mutation strategies, distribution fractions, plant growth rates, energy/reproduction ranges, action costs, and food values."
         );
         return Ok(());
     }
@@ -466,18 +580,11 @@ fn run_headless_sweep(args: HeadlessArgs) -> io::Result<()> {
             write_run_history_csv(&history_path, &history)?;
 
             let counts_history = history.counts_history();
-            let peak_herbivores = counts_history
-                .herbivores
-                .iter()
-                .copied()
-                .max()
-                .unwrap_or(final_counts.herbivores);
-            let peak_predators = counts_history
-                .predators
-                .iter()
-                .copied()
-                .max()
-                .unwrap_or(final_counts.predators);
+            let peak_counts = counts_history
+                .zip(final_counts)
+                .map(|(col, final_val)| col.iter().copied().max().unwrap_or(final_val));
+            let max_age = history.max_age();
+            let reproductions = history.reproductions();
             let max_generation_reached = history
                 .generation_history()
                 .iter()
@@ -488,7 +595,12 @@ fn run_headless_sweep(args: HeadlessArgs) -> io::Result<()> {
             let extinct = final_counts.herbivores == 0 && final_counts.predators == 0;
 
             println!(
-                "[{run_id}/{total_runs}] {label} (rep {repetition}) -> {total_ticks} ticks ({status}), max gen {max_generation_reached}, {samples} samples in {elapsed:.2?} -> {history_filename}",
+                "[{run_id}/{total_runs}] {label} (rep {repetition}) -> {total_ticks} ticks ({status}), max gen {max_generation_reached}, max age (H:{}/P:{}), repro (Pl:{}/H:{}/P:{}), {samples} samples in {elapsed:.2?} -> {history_filename}",
+                max_age.herbivores,
+                max_age.predators,
+                reproductions.plants,
+                reproductions.herbivores,
+                reproductions.predators,
                 label = format_grid_point_label(point),
                 status = if extinct { "extinct" } else { "survived" },
                 samples = history.len(),
@@ -504,10 +616,10 @@ fn run_headless_sweep(args: HeadlessArgs) -> io::Result<()> {
                 max_ticks: args.max_ticks,
                 total_ticks,
                 extinct,
-                final_herbivores: final_counts.herbivores,
-                final_predators: final_counts.predators,
-                peak_herbivores,
-                peak_predators,
+                final_counts,
+                peak_counts,
+                max_age,
+                reproductions,
                 max_generation_reached,
                 final_oldest_generation: final_gen.and_then(|g| g.oldest_alive),
                 final_youngest_generation: final_gen.and_then(|g| g.youngest),
@@ -528,11 +640,7 @@ fn execute_single_headless_run(
     point: GridPoint,
     sample_rate: NonZeroU64,
     max_ticks: u64,
-) -> (
-    SimulationHistory,
-    u64,
-    life_sim::simulation::spatial::CellCounts<u32>,
-) {
+) -> (SimulationHistory, u64, CellCounts<u32>) {
     let mut app = App::new();
     app.add_plugins((
         SimulationPlugin::builder()
@@ -540,9 +648,13 @@ fn execute_single_headless_run(
             .distribution(point.distribution)
             .initial_energy(point.initial_energy)
             .max_energy(point.max_energy)
+            .action_costs(point.action_costs)
+            .food_values(point.food_values)
             .build(),
         ReproductionPlugin::builder()
             .mutation_strategy(point.mutation_strategy)
+            .reproduction_threshold(point.reproduction_threshold)
+            .plant_growth_rate(point.plant_growth_rate)
             .build(),
         HistoryRecorderPlugin::every(sample_rate),
     ));
@@ -574,13 +686,23 @@ fn format_grid_point_label(point: GridPoint) -> String {
         MutationStrategy::SingleNeuron(_) => "SingleNeuron".to_string(),
         MutationStrategy::Distributed(d) => format!("Distributed({:.3})", d.offset),
     };
+    let repro = match point.reproduction_threshold {
+        ReproductionThreshold::Relative(frac) => format!("Rel({frac:.2})"),
+        ReproductionThreshold::Absolute(energy) => format!("Abs({energy})"),
+    };
     format!(
-        "{strategy}, dist=({:.2}/{:.2}/{:.2}), energy={}/{}",
+        "{strategy}, dist=({:.2}/{:.2}/{:.2}), growth={:.2}, energy={}/{}, repro={repro}, costs=({}/{}/{}), food=({}/{})",
         point.distribution.plants_fraction(),
         point.distribution.herbivores_fraction(),
         point.distribution.predators_fraction(),
+        point.plant_growth_rate.0,
         point.initial_energy,
         point.max_energy,
+        point.action_costs.turn,
+        point.action_costs.go_forward,
+        point.action_costs.consume,
+        point.food_values.plant,
+        point.food_values.herbivore,
     )
 }
 
@@ -604,10 +726,13 @@ fn write_run_history_csv(path: &Path, history: &SimulationHistory) -> io::Result
 
     writeln!(
         writer,
-        "tick,herbivores,predators,oldest_generation_alive,youngest_generation_alive,generation_counts"
+        "tick,plants,herbivores,predators,max_age_herbivores,max_age_predators,reproductions_plants,reproductions_herbivores,reproductions_predators,oldest_generation_alive,youngest_generation_alive,generation_counts"
     )?;
 
-    for sample in history {
+    let max_age_hist = history.max_age_history();
+    let repro_hist = history.reproductions_history();
+
+    for (idx, sample) in history.iter().enumerate() {
         let oldest = sample
             .generation
             .oldest_alive
@@ -626,10 +751,16 @@ fn write_run_history_csv(path: &Path, history: &SimulationHistory) -> io::Result
 
         writeln!(
             writer,
-            "{},{},{},{},{},\"{}\"",
+            "{},{},{},{},{},{},{},{},{},{},{},\"{}\"",
             sample.tick,
+            sample.counts.plants,
             sample.counts.herbivores,
             sample.counts.predators,
+            max_age_hist.herbivores[idx],
+            max_age_hist.predators[idx],
+            repro_hist.plants[idx],
+            repro_hist.herbivores[idx],
+            repro_hist.predators[idx],
             oldest,
             youngest,
             gen_counts
@@ -651,7 +782,7 @@ impl SummaryWriter {
             let mut writer = BufWriter::new(file);
             writeln!(
                 writer,
-                "run_id,strategy,mutation_offset,repetition,grid_width,grid_height,plants_fraction,herbivores_fraction,predators_fraction,initial_energy,max_energy,max_ticks_limit,total_ticks_survived,extinct,final_herbivores,final_predators,peak_herbivores,peak_predators,max_generation_reached,final_oldest_generation_alive,final_youngest_generation_alive,recorded_samples,history_file"
+                "run_id,strategy,mutation_offset,repetition,grid_width,grid_height,plants_fraction,herbivores_fraction,predators_fraction,plant_growth_rate,initial_energy,max_energy,reproduction_threshold_mode,reproduction_threshold_value,turn_cost,go_forward_cost,consume_cost,plant_food_value,herbivore_food_value,max_ticks_limit,total_ticks_survived,extinct,final_plants,final_herbivores,final_predators,peak_plants,peak_herbivores,peak_predators,max_age_herbivores,max_age_predators,reproductions_plants,reproductions_herbivores,reproductions_predators,max_generation_reached,final_oldest_generation_alive,final_youngest_generation_alive,recorded_samples,history_file"
             )?;
             Ok(SummaryWriter { writer })
         }
@@ -665,6 +796,10 @@ impl SummaryWriter {
                 ("Distributed", format!("{offset:.4}"))
             }
         };
+        let (repro_mode, repro_val) = match summary.point.reproduction_threshold {
+            ReproductionThreshold::Relative(frac) => ("Relative", format!("{frac:.4}")),
+            ReproductionThreshold::Absolute(energy) => ("Absolute", energy.to_string()),
+        };
         let final_oldest = summary
             .final_oldest_generation
             .map_or_else(String::new, |v| v.to_string());
@@ -674,7 +809,7 @@ impl SummaryWriter {
 
         writeln!(
             self.writer,
-            "{},{},{},{},{},{},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             summary.run_id,
             strategy_name,
             offset_str,
@@ -684,15 +819,30 @@ impl SummaryWriter {
             summary.point.distribution.plants_fraction(),
             summary.point.distribution.herbivores_fraction(),
             summary.point.distribution.predators_fraction(),
+            summary.point.plant_growth_rate.0,
             summary.point.initial_energy,
             summary.point.max_energy,
+            repro_mode,
+            repro_val,
+            summary.point.action_costs.turn,
+            summary.point.action_costs.go_forward,
+            summary.point.action_costs.consume,
+            summary.point.food_values.plant,
+            summary.point.food_values.herbivore,
             summary.max_ticks,
             summary.total_ticks,
             summary.extinct,
-            summary.final_herbivores,
-            summary.final_predators,
-            summary.peak_herbivores,
-            summary.peak_predators,
+            summary.final_counts.plants,
+            summary.final_counts.herbivores,
+            summary.final_counts.predators,
+            summary.peak_counts.plants,
+            summary.peak_counts.herbivores,
+            summary.peak_counts.predators,
+            summary.max_age.herbivores,
+            summary.max_age.predators,
+            summary.reproductions.plants,
+            summary.reproductions.herbivores,
+            summary.reproductions.predators,
             summary.max_generation_reached,
             final_oldest,
             final_youngest,
@@ -703,5 +853,80 @@ impl SummaryWriter {
 
     pub fn flush(&mut self) -> io::Result<()> {
         self.writer.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_filters_invalid_thresholds_costs_food_and_growth_rates() {
+        let grid = Grid {
+            single_neuron_mutation: true,
+            distributed_mutation: &[],
+            plants_fraction: &[0.2],
+            herbivores_fraction: &[0.1],
+            predators_fraction: &[0.05],
+            // 0.1 is valid, -0.2 and 1.5 are filtered out
+            plant_growth_rate: &[
+                PlantGrowthRate(-0.2),
+                PlantGrowthRate(0.1),
+                PlantGrowthRate(1.5),
+            ],
+            // (5, 10) and (5, 20) are valid; (25, 10) and (25, 20) are filtered out (initial > max)
+            initial_energy: &[InitialEnergy(Energy(5.0)), InitialEnergy(Energy(25.0))],
+            max_energy: &[MaxEnergy(Energy(10.0)), MaxEnergy(Energy(20.0))],
+            // 0.9 is valid for both max_energy=10 and max_energy=20; 1.2 is invalid
+            reproduction_threshold_relative: &[0.9, 1.2],
+            // 15.0 is invalid for max_energy=10 (15 > 10), but valid for max_energy=20
+            reproduction_threshold_absolute: &[Energy(0.0), Energy(15.0)],
+            // Negative cost is filtered out
+            turn_cost: &[Energy(-1.0), Energy(1.0)],
+            go_forward_cost: &[Energy(1.5)],
+            consume_cost: &[Energy(0.5)],
+            // Negative food value is filtered out
+            plant_food_value: &[Energy(1.0), Energy(-0.5)],
+            herbivore_food_value: &[Energy(2.0)],
+        };
+
+        assert!(!grid.is_empty());
+        // Valid combinations:
+        // - 1 mutation strategy (SingleNeuron)
+        // - 1 distribution (0.2, 0.1, 0.05)
+        // - 1 plant growth rate (0.1)
+        // - 3 (initial_energy, max_energy, reproduction_threshold) tuples:
+        //   1. (5.0, 10.0, Relative(0.9))
+        //   2. (5.0, 20.0, Relative(0.9))
+        //   3. (5.0, 20.0, Absolute(15.0))
+        // - 1 ActionCosts (1.0, 1.5, 0.5)
+        // - 1 FoodValues (1.0, 2.0)
+        assert_eq!(grid.len(), 3);
+        let points: Vec<_> = grid.iter().collect();
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[0].plant_growth_rate, PlantGrowthRate(0.1));
+        assert_eq!(
+            points[0].action_costs,
+            ActionCosts {
+                turn: Energy(1.0),
+                go_forward: Energy(1.5),
+                consume: Energy(0.5),
+            }
+        );
+        assert_eq!(
+            points[0].food_values,
+            FoodValues {
+                plant: Energy(1.0),
+                herbivore: Energy(2.0),
+            }
+        );
+        assert_eq!(
+            points[0].reproduction_threshold,
+            ReproductionThreshold::Relative(0.9)
+        );
+        assert_eq!(
+            points[2].reproduction_threshold,
+            ReproductionThreshold::Absolute(Energy(15.0))
+        );
     }
 }

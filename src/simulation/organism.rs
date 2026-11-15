@@ -57,6 +57,12 @@ pub enum EntityKind {
 pub struct Age(u32);
 
 impl Age {
+    #[must_use]
+    pub const fn new(ticks: u32) -> Self {
+        Self(ticks)
+    }
+
+    #[must_use]
     pub const fn ticks(self) -> u32 {
         self.0
     }
@@ -303,6 +309,11 @@ impl<T> DecrementResult<T> {
 
 impl Energy {
     #[must_use]
+    pub const fn is_deceased(self) -> bool {
+        self.0 <= 0.0
+    }
+
+    #[must_use]
     pub fn saturating_add(self, rhs: Self) -> Self {
         Self(self.0 + rhs.0)
     }
@@ -321,7 +332,7 @@ impl Energy {
 
         DecrementResult {
             value: (),
-            deceased: self.0 <= 0.0,
+            deceased: self.is_deceased(),
         }
     }
 
@@ -331,7 +342,7 @@ impl Energy {
 
         DecrementResult {
             value: Self(half),
-            deceased: self.0 <= 0.0,
+            deceased: self.is_deceased(),
         }
     }
 }
@@ -342,9 +353,11 @@ impl Energy {
 pub struct ConsumerCount(AtomicU32);
 
 impl ConsumerCount {
+    /// Atomically increments the number of consumers targeting this entity and returns `true`
+    /// if the caller is the **first** consumer (`0 -> 1`).
     #[inline]
-    pub fn increment(&self) {
-        self.0.fetch_add(1, Ordering::Relaxed);
+    pub fn increment(&self) -> bool {
+        self.0.fetch_add(1, Ordering::Relaxed) == 0
     }
 
     #[inline]
@@ -362,6 +375,12 @@ pub struct ValueAsFood(pub Energy);
 impl ValueAsFood {
     pub const fn per_tick(self) -> Energy {
         self.0
+    }
+}
+
+impl From<Energy> for ValueAsFood {
+    fn from(value: Energy) -> Self {
+        Self(value)
     }
 }
 

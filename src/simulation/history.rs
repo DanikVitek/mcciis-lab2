@@ -3,17 +3,23 @@ use core::num::NonZeroU64;
 use core::slice;
 
 use bevy::prelude::*;
-use parking_lot::Mutex;
 
 use super::organism::{
+    Age,
     CharacterFilter,
+    EntityKind,
     Generation,
+    Herbivore,
 };
 use super::spatial::{
     CellCounts,
+    CharacterCounts,
     SpatialGrid,
 };
 use super::{
+    CharacterAged,
+    CharacterDied,
+    OrganismReproduced,
     SimulationSystems,
     SimulationTick,
     SimulationTickCount,
@@ -39,7 +45,7 @@ pub struct HistorySample {
     pub generation: GenerationSample,
 }
 
-/// Time-series log of [`HistorySample`]s across the current simulation run (stored in SoA form).
+/// Time-series log of [`HistorySample`]s and cumulative run metrics across the current simulation run (stored in SoA form).
 ///
 /// Cleared and seeded with a `tick = 0` baseline whenever [`WorldSeeded`] fires
 /// (both on initial startup and on [`super::ResetSimulation`]).
@@ -50,12 +56,26 @@ pub struct SimulationHistory {
     tick: Vec<u64>,
     counts: CellCounts<Vec<u32>>,
     generations: Vec<GenerationSample>,
+    max_age: CharacterCounts<u32>,
+    reproductions: CellCounts<u64>,
+    max_age_history: CharacterCounts<Vec<u32>>,
+    reproductions_history: CellCounts<Vec<u64>>,
 }
 
 impl SimulationHistory {
     /// Monotonically increasing run counter incremented on every [`Self::clear`] call.
     pub const fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// Maximum age (in ticks) reached by any character of each type (`herbivores`, `predators`) during the run.
+    pub const fn max_age(&self) -> CharacterCounts<u32> {
+        self.max_age
+    }
+
+    /// Total number of reproductions performed by each entity type (`plants`, `herbivores`, `predators`) during the run.
+    pub const fn reproductions(&self) -> CellCounts<u64> {
+        self.reproductions
     }
 
     pub fn tick_history(&self) -> &[u64] {
@@ -68,6 +88,14 @@ impl SimulationHistory {
 
     pub fn generation_history(&self) -> &[GenerationSample] {
         &self.generations
+    }
+
+    pub fn max_age_history(&self) -> CharacterCounts<&[u32]> {
+        self.max_age_history.as_ref().map(Vec::as_slice)
+    }
+
+    pub fn reproductions_history(&self) -> CellCounts<&[u64]> {
+        self.reproductions_history.as_ref().map(Vec::as_slice)
     }
 
     pub fn first_tick(&self) -> Option<u64> {
@@ -163,6 +191,39 @@ impl SimulationHistory {
         self.tick.clear();
         self.counts.as_mut().for_each(Vec::clear);
         self.generations.clear();
+        self.max_age = CharacterCounts::default();
+        self.reproductions = CellCounts::default();
+        self.max_age_history.as_mut().for_each(Vec::clear);
+        self.reproductions_history.as_mut().for_each(Vec::clear);
+    }
+
+    pub fn record_reproduction(&mut self, kind: EntityKind) {
+        self.reproductions[kind] += 1;
+        if let Some(last) = self.reproductions_history[kind].last_mut() {
+            *last = self.reproductions[kind];
+        }
+    }
+
+    pub fn record_age(&mut self, kind: EntityKind, ticks: u32) {
+        match kind {
+            EntityKind::Herbivore => {
+                if ticks > self.max_age.herbivores {
+                    self.max_age.herbivores = ticks;
+                    if let Some(last) = self.max_age_history.herbivores.last_mut() {
+                        *last = ticks;
+                    }
+                }
+            }
+            EntityKind::Predator => {
+                if ticks > self.max_age.predators {
+                    self.max_age.predators = ticks;
+                    if let Some(last) = self.max_age_history.predators.last_mut() {
+                        *last = ticks;
+                    }
+                }
+            }
+            EntityKind::Plant => {}
+        }
     }
 
     pub fn push(
@@ -177,6 +238,22 @@ impl SimulationHistory {
         if self.last_counts().is_some_and(|it| it == counts)
             && self.generations.last().is_some_and(|g| g == &generation)
         {
+            self.max_age_history
+                .as_mut()
+                .zip(self.max_age)
+                .for_each(|(col, val)| {
+                    if let Some(last) = col.last_mut() {
+                        *last = val;
+                    }
+                });
+            self.reproductions_history
+                .as_mut()
+                .zip(self.reproductions)
+                .for_each(|(col, val)| {
+                    if let Some(last) = col.last_mut() {
+                        *last = val;
+                    }
+                });
             return;
         }
         self.tick.push(tick);
@@ -185,6 +262,14 @@ impl SimulationHistory {
             .zip(counts)
             .for_each(|(col, val)| col.push(val));
         self.generations.push(generation);
+        self.max_age_history
+            .as_mut()
+            .zip(self.max_age)
+            .for_each(|(col, val)| col.push(val));
+        self.reproductions_history
+            .as_mut()
+            .zip(self.reproductions)
+            .for_each(|(col, val)| col.push(val));
     }
 
     pub fn len(&self) -> usize {
@@ -193,6 +278,12 @@ impl SimulationHistory {
             .as_ref()
             .for_each(|col| debug_assert_eq!(len, col.len()));
         debug_assert_eq!(len, self.generations.len());
+        self.max_age_history
+            .as_ref()
+            .for_each(|col| debug_assert_eq!(len, col.len()));
+        self.reproductions_history
+            .as_ref()
+            .for_each(|col| debug_assert_eq!(len, col.len()));
         len
     }
 
@@ -317,6 +408,61 @@ impl SampleRate {
     }
 }
 
+/// Incremental generation histogram maintained from [`WorldSeeded`], [`OrganismReproduced`], and [`CharacterDied`].
+#[derive(Debug, Clone, Default, Resource)]
+struct GenerationTracker {
+    table: Vec<u32>,
+}
+
+impl GenerationTracker {
+    fn reset<'a>(&mut self, generations: impl Iterator<Item = &'a Generation>) {
+        self.table.fill(0);
+        for generation in generations {
+            self.increment(*generation);
+        }
+    }
+
+    #[inline]
+    fn increment(&mut self, generation: Generation) {
+        let idx = generation.number() as usize;
+        if idx >= self.table.len() {
+            self.table.resize(idx + 1, 0);
+        }
+        self.table[idx] += 1;
+    }
+
+    #[inline]
+    fn decrement(&mut self, generation: Generation) {
+        let idx = generation.number() as usize;
+        if let Some(slot) = self.table.get_mut(idx) {
+            *slot = slot.saturating_sub(1);
+        }
+    }
+
+    fn sample(&self) -> GenerationSample {
+        let mut oldest_alive = None;
+        let mut youngest = None;
+        let mut counts = Vec::new();
+
+        for (idx, &count) in self.table.iter().enumerate() {
+            if count > 0 {
+                let gen_num = idx as u32;
+                if oldest_alive.is_none() {
+                    oldest_alive = Some(gen_num);
+                }
+                youngest = Some(gen_num);
+                counts.push((gen_num, count));
+            }
+        }
+
+        GenerationSample {
+            oldest_alive,
+            youngest,
+            counts,
+        }
+    }
+}
+
 /// Optional plugin that records per-tick population & evolution history into [`SimulationHistory`].
 ///
 /// Usable in both headless batch runs and visual runs (where UI charts can read `Res<SimulationHistory>`).
@@ -336,94 +482,55 @@ impl HistoryRecorderPlugin {
 
 impl Plugin for HistoryRecorderPlugin {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<TaskPoolPlugin>() {
-            app.add_plugins(TaskPoolPlugin::default());
-        }
-
-        app.init_resource::<SimulationHistory>()
+        app.add_message::<OrganismReproduced>()
+            .add_message::<CharacterDied>()
+            .add_message::<CharacterAged>()
+            .init_resource::<SimulationHistory>()
+            .init_resource::<GenerationTracker>()
             .insert_resource(self.sample_rate)
             .add_observer(on_world_seeded)
             .add_systems(
                 SimulationTick,
-                record_tick_sample
-                    .run_if(is_sample_tick)
+                (
+                    ingest_lifecycle_messages,
+                    record_tick_sample.run_if(is_sample_tick),
+                )
+                    .chain()
                     .in_set(SimulationSystems::Record),
             );
     }
 }
 
-struct BatchGenerationHistogram<'a> {
-    local: Vec<u32>,
-    shared: &'a Mutex<Vec<u32>>,
-}
-
-impl Drop for BatchGenerationHistogram<'_> {
-    fn drop(&mut self) {
-        if self.local.is_empty() {
-            return;
-        }
-        let mut merged = self.shared.lock();
-        if merged.len() < self.local.len() {
-            merged.resize(self.local.len(), 0);
-        }
-        for (dst, &count) in merged.iter_mut().zip(&self.local) {
-            *dst += count;
-        }
-    }
-}
-
-fn sample_generations(generations: &Query<&Generation, CharacterFilter>) -> GenerationSample {
-    let shared: Mutex<Vec<u32>> = Mutex::new(Vec::new());
-
-    generations.par_iter().for_each_init(
-        || BatchGenerationHistogram {
-            local: Vec::new(),
-            shared: &shared,
-        },
-        |batch, generation| {
-            let idx = generation.number() as usize;
-            if idx >= batch.local.len() {
-                batch.local.resize(idx + 1, 0);
-            }
-            batch.local[idx] += 1;
-        },
-    );
-
-    let table = shared.into_inner();
-    let mut oldest_alive = None;
-    let mut youngest = None;
-    let mut counts = Vec::new();
-
-    for (idx, &count) in table.iter().enumerate() {
-        if count > 0 {
-            let gen_num = idx as u32;
-            if oldest_alive.is_none() {
-                oldest_alive = Some(gen_num);
-            }
-            youngest = Some(gen_num);
-            counts.push((gen_num, count));
-        }
-    }
-
-    GenerationSample {
-        oldest_alive,
-        youngest,
-        counts,
-    }
-}
-
+#[allow(clippy::too_many_arguments)]
 fn on_world_seeded(
     _: On<WorldSeeded>,
     mut history: ResMut<SimulationHistory>,
+    mut tracker: ResMut<GenerationTracker>,
+    mut reproduced: ResMut<Messages<OrganismReproduced>>,
+    mut died: ResMut<Messages<CharacterDied>>,
+    mut aged: ResMut<Messages<CharacterAged>>,
     tick_count: Res<SimulationTickCount>,
     spatial_grid: Res<SpatialGrid>,
-    generations: Query<&Generation, CharacterFilter>,
+    characters: Query<(&Generation, &Age, Has<Herbivore>), CharacterFilter>,
 ) {
+    reproduced.clear();
+    died.clear();
+    aged.clear();
+
+    tracker.reset(characters.iter().map(|(generation, _, _)| generation));
     history.clear();
+    for (_, age, is_herbivore) in &characters {
+        let kind = if is_herbivore {
+            EntityKind::Herbivore
+        } else {
+            EntityKind::Predator
+        };
+        history.record_age(kind, age.ticks());
+    }
     history.push(HistorySample {
         tick: tick_count.0,
         counts: spatial_grid.total_counts(),
-        generation: sample_generations(&generations),
+        generation: tracker.sample(),
     });
 }
 
@@ -431,15 +538,51 @@ fn is_sample_tick(sample_rate: Res<SampleRate>, tick_count: Res<SimulationTickCo
     tick_count.0.is_multiple_of(sample_rate.once_every.get())
 }
 
+fn ingest_lifecycle_messages(
+    mut history: ResMut<SimulationHistory>,
+    mut tracker: ResMut<GenerationTracker>,
+    mut reproduced_reader: MessageReader<OrganismReproduced>,
+    mut died_reader: MessageReader<CharacterDied>,
+    mut aged_reader: MessageReader<CharacterAged>,
+) {
+    let history = history.bypass_change_detection();
+
+    for &OrganismReproduced {
+        kind,
+        child_generation,
+    } in reproduced_reader.read()
+    {
+        history.record_reproduction(kind);
+        if let Some(child_gen) = child_generation {
+            tracker.increment(child_gen);
+        }
+    }
+
+    for &CharacterDied {
+        kind,
+        age,
+        generation,
+        ..
+    } in died_reader.read()
+    {
+        history.record_age(kind, age.ticks());
+        tracker.decrement(generation);
+    }
+
+    for &CharacterAged { kind, max_age } in aged_reader.read() {
+        history.record_age(kind, max_age.ticks());
+    }
+}
+
 fn record_tick_sample(
     mut history: ResMut<SimulationHistory>,
+    tracker: Res<GenerationTracker>,
     tick_count: Res<SimulationTickCount>,
     spatial_grid: Res<SpatialGrid>,
-    generations: Query<&Generation, CharacterFilter>,
 ) {
     history.push(HistorySample {
         tick: tick_count.0,
         counts: spatial_grid.total_counts(),
-        generation: sample_generations(&generations),
+        generation: tracker.sample(),
     });
 }

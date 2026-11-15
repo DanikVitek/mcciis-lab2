@@ -27,12 +27,12 @@ use crate::grid::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Resource)]
-pub struct CharacterCounts {
-    pub herbivores: u32,
-    pub predators: u32,
+pub struct CharacterCounts<T = u32> {
+    pub herbivores: T,
+    pub predators: T,
 }
 
-impl CharacterCounts {
+impl CharacterCounts<u32> {
     pub const fn total(&self) -> u32 {
         self.herbivores + self.predators
     }
@@ -42,11 +42,69 @@ impl CharacterCounts {
     }
 }
 
-impl<T> From<CellCounts<T>> for CharacterCounts
+impl<T> CharacterCounts<T> {
+    pub const fn as_ref(&self) -> CharacterCounts<&T> {
+        CharacterCounts {
+            herbivores: &self.herbivores,
+            predators: &self.predators,
+        }
+    }
+
+    pub fn as_mut(&mut self) -> CharacterCounts<&mut T> {
+        CharacterCounts {
+            herbivores: &mut self.herbivores,
+            predators: &mut self.predators,
+        }
+    }
+
+    pub fn map<F, U>(self, mut f: F) -> CharacterCounts<U>
+    where
+        F: FnMut(T) -> U,
+    {
+        CharacterCounts {
+            herbivores: f(self.herbivores),
+            predators: f(self.predators),
+        }
+    }
+
+    pub fn for_each<F>(self, mut f: F)
+    where
+        F: FnMut(T),
+    {
+        f(self.herbivores);
+        f(self.predators);
+    }
+
+    pub fn zip<U>(self, other: CharacterCounts<U>) -> CharacterCounts<(T, U)> {
+        CharacterCounts {
+            herbivores: (self.herbivores, other.herbivores),
+            predators: (self.predators, other.predators),
+        }
+    }
+
+    pub fn into_array(self) -> [T; 2] {
+        [self.herbivores, self.predators]
+    }
+}
+
+impl<T> CharacterCounts<Option<T>> {
+    pub fn transpose(self) -> Option<CharacterCounts<T>> {
+        match (self.herbivores, self.predators) {
+            (Some(herbivores), Some(predators)) => Some(CharacterCounts {
+                herbivores,
+                predators,
+            }),
+            (None, None) => None,
+            _ => unreachable!("SoA columns in CharacterCounts have mismatched lengths"),
+        }
+    }
+}
+
+impl<T, U> From<CellCounts<U>> for CharacterCounts<T>
 where
-    u32: From<T>,
+    T: From<U>,
 {
-    fn from(value: CellCounts<T>) -> Self {
+    fn from(value: CellCounts<U>) -> Self {
         Self {
             herbivores: value.herbivores.into(),
             predators: value.predators.into(),
@@ -171,21 +229,22 @@ where
     }
 }
 
-impl<T> AddAssign<CellCounts<T>> for CharacterCounts
+impl<T, U> AddAssign<CellCounts<U>> for CharacterCounts<T>
 where
-    u32: From<T>,
+    T: From<U>,
+    T: AddAssign,
 {
-    fn add_assign(&mut self, rhs: CellCounts<T>) {
-        self.herbivores += u32::from(rhs.herbivores);
-        self.predators += u32::from(rhs.predators);
+    fn add_assign(&mut self, rhs: CellCounts<U>) {
+        self.herbivores += T::from(rhs.herbivores);
+        self.predators += T::from(rhs.predators);
     }
 }
 
-impl<T> Sum<CellCounts<T>> for CharacterCounts
+impl<T, U> Sum<CellCounts<U>> for CharacterCounts<T>
 where
-    Self: AddAssign<CellCounts<T>> + Default,
+    Self: AddAssign<CellCounts<U>> + Default,
 {
-    fn sum<I: Iterator<Item = CellCounts<T>>>(iter: I) -> Self {
+    fn sum<I: Iterator<Item = CellCounts<U>>>(iter: I) -> Self {
         iter.fold(Self::default(), |mut acc, item| {
             acc += item;
             acc
@@ -283,7 +342,7 @@ impl SpatialGrid {
     }
 
     /// Appends `entity` to `pos`'s entity list after its cell and total counts were already incremented
-    /// (e.g. via [`Self::try_claim_empty_plant_tile`]).
+    /// (e.g. via [`Self::try_claim_empty_tile`]).
     pub fn push_claimed_entity(&self, claim_token: ClaimToken<'_>, entity: Entity) {
         let claim_token = ManuallyDrop::new(claim_token);
         let i = self.idx(claim_token.pos);
