@@ -74,7 +74,7 @@ struct Cli {
 enum CliCommand {
     /// Run the interactive 2D visual simulation (default when no subcommand is given).
     Visual(VisualArgs),
-    /// Run headless batch experiments across a parameter grid and export CSVs for the lab protocol.
+    /// Run headless batch experiments across a parameter grid and export CSVs for the lab report.
     Headless(Box<HeadlessArgs>),
 }
 
@@ -213,7 +213,7 @@ struct HeadlessArgs {
     height: u16,
 
     /// Output directory where `summary.csv` and per-run time-series CSV files will be written.
-    #[arg(long, default_value = "protocol_results")]
+    #[arg(long, default_value = "report/results/")]
     output_dir: PathBuf,
 }
 
@@ -630,7 +630,7 @@ fn run_headless_sweep(args: HeadlessArgs) -> io::Result<()> {
     }
 
     summary_writer.flush()?;
-    println!("Exported protocol summary to {}", summary_path.display());
+    println!("Exported report summary to {}", summary_path.display());
 
     Ok(())
 }

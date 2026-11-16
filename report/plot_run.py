@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot entity population over iterations for all runs in a directory and display run metrics on each image."""
+"""Побудова графіків чисельності організмів за ітераціями для всіх прогонів у директорії з відображенням метрик на зображенні."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ ENTITY_COLUMN_MAP = {
 }
 
 ENTITY_LABELS = {
-    "plants": ("Plant (Algae)", "#2ca02c"),
-    "herbivores": ("Herbivore", "#1f77b4"),
-    "predators": ("Predator", "#d62728"),
+    "plants": ("Рослини (водорості)", "#2ca02c"),
+    "herbivores": ("Травоїдні", "#1f77b4"),
+    "predators": ("Хижаки", "#d62728"),
 }
 
 
@@ -32,10 +32,10 @@ def resolve_csv_paths(path: Path) -> list[Path]:
     if path.is_dir():
         candidates = sorted(path.glob("run_*.csv"))
         if not candidates:
-            raise FileNotFoundError(f"No 'run_*.csv' files found in directory: {path}")
+            raise FileNotFoundError(f"У директорії не знайдено файлів 'run_*.csv': {path}")
         return candidates
     if not path.is_file():
-        raise FileNotFoundError(f"CSV file or directory not found: {path}")
+        raise FileNotFoundError(f"CSV-файл або директорію не знайдено: {path}")
     return [path]
 
 
@@ -44,7 +44,7 @@ def load_run_csv(csv_path: Path) -> list[dict[str, str]]:
         reader = csv.DictReader(f)
         rows = list(reader)
     if not rows:
-        raise ValueError(f"Run CSV file is empty: {csv_path}")
+        raise ValueError(f"CSV-файл прогону порожній: {csv_path}")
     return rows
 
 
@@ -86,7 +86,7 @@ def extract_summary_metrics(
         }
 
     raise KeyError(
-        f"CSV '{csv_path}' does not contain max_age/reproductions columns and no matching summary.csv entry was found."
+        f"CSV '{csv_path}' не містить стовпців max_age/reproductions, а відповідний запис у summary.csv не знайдено."
     )
 
 
@@ -104,7 +104,7 @@ def parse_entity_types(raw_types: list[str]) -> list[str]:
                 return ["plants", "herbivores", "predators"]
             if key not in ENTITY_COLUMN_MAP:
                 valid = ", ".join(["plant", "herbivore", "predator", "all"])
-                raise ValueError(f"Unknown entity type '{token}'. Choose from: {valid}")
+                raise ValueError(f"Невідомий тип організмів '{token}'. Допустимі значення: {valid}")
             col = ENTITY_COLUMN_MAP[key]
             if col not in selected:
                 selected.append(col)
@@ -125,7 +125,7 @@ def plot_single_run(
     for col in selected_columns:
         if col not in rows[0]:
             print(
-                f"Warning: column '{col}' is not present in {csv_path.name}; skipping.",
+                f"Попередження: стовпець '{col}' відсутній у {csv_path.name}; пропускаємо.",
                 file=sys.stderr,
             )
             continue
@@ -133,18 +133,22 @@ def plot_single_run(
         label, color = ENTITY_LABELS[col]
         ax.plot(ticks, values, label=label, color=color, linewidth=1.8)
 
-    ax.set_title(f"Entity Population by Iteration ({csv_path.stem})", fontsize=12, fontweight="bold")
-    ax.set_xlabel("Iteration (Tick)")
-    ax.set_ylabel("Entity Count")
+    ax.set_title(
+        "Чисельність популяції за ітераціями",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax.set_xlabel("Ітерація (крок)")
+    ax.set_ylabel("Кількість особин")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(loc="upper right")
 
     metrics_banner = (
-        f"Max Character Age (ticks)   —   Herbivore: {metrics['max_age_herbivores']}   |   "
-        f"Predator: {metrics['max_age_predators']}\n"
-        f"Reproductions Performed   —   Plant: {metrics['reproductions_plants']}   |   "
-        f"Herbivore: {metrics['reproductions_herbivores']}   |   "
-        f"Predator: {metrics['reproductions_predators']}"
+        f"Макс. вік особин (кроків)   —   Травоїдні: {metrics['max_age_herbivores']}   |   "
+        f"Хижаки: {metrics['max_age_predators']}\n"
+        f"Кількість розмножень   —   Рослини: {metrics['reproductions_plants']}   |   "
+        f"Травоїдні: {metrics['reproductions_herbivores']}   |   "
+        f"Хижаки: {metrics['reproductions_predators']}"
     )
     fig.text(
         0.5,
@@ -169,9 +173,9 @@ def plot_single_run(
     plt.close(fig)
 
     print(
-        f"[{csv_path.name}] ticks={ticks[0]}..{ticks[-1]} ({len(rows)} samples) | "
-        f"max_age=(H:{metrics['max_age_herbivores']}, P:{metrics['max_age_predators']}) | "
-        f"reproductions=(Pl:{metrics['reproductions_plants']}, H:{metrics['reproductions_herbivores']}, P:{metrics['reproductions_predators']}) "
+        f"[{csv_path.name}] кроки={ticks[0]}..{ticks[-1]} ({len(rows)} записів) | "
+        f"макс_вік=(Т:{metrics['max_age_herbivores']}, Х:{metrics['max_age_predators']}) | "
+        f"розмноження=(Р:{metrics['reproductions_plants']}, Т:{metrics['reproductions_herbivores']}, Х:{metrics['reproductions_predators']}) "
         f"-> {output_path}"
     )
     return output_path
@@ -180,17 +184,17 @@ def plot_single_run(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Plot the amount of entities of a given type (plant/herbivore/predator) across "
-            "iterations for all runs in a directory (or a single CSV file), saving each plot "
-            "next to its run CSV with max age and reproduction counts displayed on the image."
+            "Побудова графіків кількості організмів заданого типу (plant/herbivore/predator) "
+            "за ітераціями для всіх прогонів у директорії (або одного CSV-файлу) зі збереженням "
+            "зображення поруч із файлом прогону та відображенням макс. віку й кількості розмножень."
         )
     )
     parser.add_argument(
         "input",
         nargs="?",
         type=Path,
-        default=Path("protocol_results"),
-        help="Path to a results directory containing run_*.csv files or a single run_*.csv file (default: ./protocol_results)",
+        default=Path("results/"),
+        help="Шлях до директорії з файлами run_*.csv або до окремого файлу run_*.csv (за замовчуванням: ./results/)",
     )
     parser.add_argument(
         "-t",
@@ -199,15 +203,15 @@ def main() -> int:
         action="append",
         default=[],
         help=(
-            "Entity type(s) to plot: plant, herbivore, predator, or all "
-            "(can be passed multiple times or comma-separated; default: all)"
+            "Типи організмів для побудови: plant, herbivore, predator або all "
+            "(можна вказувати кілька разів або через кому; за замовчуванням: all)"
         ),
     )
     parser.add_argument(
         "-f",
         "--format",
         default="png",
-        help="Image file extension/format to save next to each run CSV (default: png)",
+        help="Формат/розширення файлу зображення поруч із кожним CSV прогону (за замовчуванням: png)",
     )
     args = parser.parse_args()
 
@@ -215,7 +219,7 @@ def main() -> int:
         csv_paths = resolve_csv_paths(args.input)
         selected_columns = parse_entity_types(args.entity_types)
     except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Помилка: {exc}", file=sys.stderr)
         return 1
 
     base_dir = args.input if args.input.is_dir() else args.input.parent
@@ -227,10 +231,10 @@ def main() -> int:
             plot_single_run(csv_path, selected_columns, summary_index, args.format)
             saved_count += 1
         except Exception as exc:
-            print(f"Error plotting '{csv_path}': {exc}", file=sys.stderr)
+            print(f"Помилка побудови графіка для '{csv_path}': {exc}", file=sys.stderr)
             return 1
 
-    print(f"\nGenerated {saved_count} plot image(s) in {base_dir}")
+    print(f"\nЗгенеровано зображень графіків: {saved_count} (у {base_dir})")
     return 0
 
 
